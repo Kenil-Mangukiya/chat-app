@@ -1,0 +1,220 @@
+"use client"
+
+import { sendMessage } from "@/app/api/message-handler.js"
+import { Button } from "@/components/ui/button"
+import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
+import { Input } from "@/components/ui/input"
+import socket from "@/lib/socket"
+import { messageSchema } from "@/schema/message-schema"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useSession } from "next-auth/react"
+import { useSearchParams } from "next/navigation"
+import { useEffect, useState, useRef } from "react"
+import { FormProvider, useForm } from "react-hook-form"
+import { Bell, MessageCircle } from "lucide-react"
+
+function ChatPage() {
+    const { data: session, status } = useSession()
+    const [messages, setMessages] = useState([])
+    const searchParams = useSearchParams()
+    const receiverId = searchParams.get("receiverId")
+    const [contentError, setContentError] = useState("")
+    const [notifications, setNotifications] = useState([])
+    const [showNotifications, setShowNotifications] = useState(false)
+    const notificationRef = useRef(null)
+
+    console.log("Session data is: ", session)
+    console.log("Receiver ID from URL: ", receiverId)
+
+    const form = useForm({
+        resolver: zodResolver(messageSchema),
+        defaultValues: {
+            content: ""
+        }
+    })
+
+    useEffect(() => {
+        if (session?.user?._id) {
+            socket.emit("join_room", session.user._id)
+            console.log("Joined room:", session.user._id)
+        }
+    }, [session])
+
+    useEffect(() => {
+        socket.on("message_sent", (newMessage) => {
+            console.log("Message from server is : ", newMessage)
+            setMessages((prevMessages) => [...prevMessages, newMessage])
+        })
+
+        socket.on("receive_message", (newMessage) => {
+          console.log("Received message from server: ", newMessage);
+          setMessages((prevMessages) => [...prevMessages, newMessage]);
+          
+          // Add notification for received messages
+          if (newMessage.senderid !== session?.user?._id) {
+            setNotifications(prev => [...prev, {
+              id: Date.now(),
+              message: newMessage.content,
+              sender: newMessage.senderid,
+              timestamp: new Date()
+            }]);
+          }
+        });
+
+        return () => {
+            socket.off("message_sent") // Clean up listener on unmount
+        }
+    }, [session?.user?._id])
+
+    // Close notifications when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (notificationRef.current && !notificationRef.current.contains(event.target)) {
+                setShowNotifications(false)
+            }
+        }
+
+        document.addEventListener('mousedown', handleClickOutside)
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside)
+        }
+    }, [])
+
+    const onSubmit = async (data) => {
+        if (!data.content || data.content.trim() === "") {
+            setContentError("Please enter a message")
+            return
+        }
+
+        setContentError("")
+
+        if (session?.user?._id && receiverId) {
+            try {
+                await sendMessage(session.user._id, receiverId, data.content)
+                form.reset()
+            } catch (error) {
+                console.error(error)
+                setContentError("Failed to send message")
+            }
+        } else {
+            console.error("Cannot send message: Missing user ID or receiver ID")
+            if (!session?.user?._id) {
+                setContentError("You must be logged in to send messages")
+            } else if (!receiverId) {
+                setContentError("No recipient selected")
+            }
+        }
+    }
+
+    return (
+        <div className="p-4">
+            {/* Display messages */}
+            <div className="mb-4 border rounded p-3 heigth-auto max-h-96 overflow-y-auto">
+                {messages.map((msg, index) => (
+                    <div key={index} className={`p-2 mb-2 rounded ${msg.senderid === session?.user?._id ? "bg-blue-100 ml-auto" : "bg-gray-100"}`}>
+                        {msg.content}
+                    </div>
+                ))}
+                {messages.length === 0 && <p className="text-gray-400">No messages yet</p>}
+            </div>
+
+            {/* Message input form */}
+            <FormProvider {...form}>
+                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                    <FormField
+                        control={form.control}
+                        name="content"
+                        render={({ field }) => (
+                            <FormItem>
+                                <FormLabel>Message</FormLabel>
+                                <FormControl>
+                                    <Input
+                                        type="text"
+                                        placeholder="Enter message..."
+                                        {...field}
+                                    />
+                                </FormControl>
+                                <FormMessage />
+                            </FormItem>
+                        )}
+                    />
+                    {contentError && <p className="text-red-500">{contentError}</p>}
+                    <div className="flex items-center space-x-3">
+                        <Button type="submit" className="flex items-center space-x-2">
+                            <MessageCircle size={16} />
+                            <span>Send</span>
+                        </Button>
+                        
+                        {/* Notification Icon */}
+                        <div className="relative group" ref={notificationRef}>
+                            <button
+                                onClick={() => setShowNotifications(!showNotifications)}
+                                className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors duration-200 relative"
+                            >
+                                <Bell size={20} className="text-gray-600" />
+                                {notifications.length > 0 && (
+                                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center animate-pulse">
+                                        {notifications.length}
+                                    </span>
+                                )}
+                            </button>
+                            
+                            {/* Tooltip */}
+                            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 bg-gray-800 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                <div className="font-medium">Notifications</div>
+                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-gray-800"></div>
+                            </div>
+                            
+                            {/* Notifications Dropdown */}
+                            {showNotifications && (
+                                <div className="absolute bottom-full right-0 mb-2 bg-white border border-gray-200 rounded-lg shadow-lg w-80 max-h-64 overflow-y-auto z-50">
+                                    <div className="p-3 border-b border-gray-200">
+                                        <h3 className="font-semibold text-gray-800">Notifications</h3>
+                                    </div>
+                                    <div className="p-2">
+                                        {notifications.length === 0 ? (
+                                            <p className="text-gray-500 text-sm text-center py-4">No notifications</p>
+                                        ) : (
+                                            notifications.map((notification) => (
+                                                <div key={notification.id} className="p-2 hover:bg-gray-50 rounded-lg transition-colors">
+                                                    <div className="flex items-start space-x-2">
+                                                        <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 flex-shrink-0"></div>
+                                                        <div className="flex-1">
+                                                            <p className="text-sm text-gray-800">{notification.message}</p>
+                                                            <p className="text-xs text-gray-500 mt-1">
+                                                                {notification.timestamp.toLocaleTimeString()}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                    {notifications.length > 0 && (
+                                        <div className="p-2 border-t border-gray-200">
+                                            <button
+                                                onClick={() => setNotifications([])}
+                                                className="w-full text-xs text-gray-500 hover:text-gray-700 transition-colors"
+                                            >
+                                                Clear all notifications
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </form>
+            </FormProvider>
+
+            {/* Display receiver info */}
+            {receiverId ? (
+                <p className="mt-4 text-sm text-gray-500">Chatting with user: {receiverId}</p>
+            ) : (
+                <p className="mt-4 text-sm text-red-500">No recipient selected. Add "?receiverId=USER_ID" to the URL.</p>
+            )}
+        </div>
+    )
+}
+
+export default ChatPage
