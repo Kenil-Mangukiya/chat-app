@@ -19,6 +19,7 @@ import { useRouter } from "next/navigation"
 import { z } from "zod"
 import socket from "@/lib/socket"
 import { useEffect } from "react"
+import { useSession } from "next-auth/react"
 
 // New schema for username-based friend requests
 const addFriendSchema = z.object({
@@ -26,28 +27,28 @@ const addFriendSchema = z.object({
 })
 
 function AddFriendPage() {
+    const { data: session } = useSession()
     const [message, setMessage] = useState("")
     const [isLoading, setIsLoading] = useState(false)
     const [debugInfo, setDebugInfo] = useState(null)
     const router = useRouter()
     
-    // Debug socket connection
+    // Ensure the sender joins their own room and listens for response notifications
     useEffect(() => {
-        console.log("Add-friend page socket connection status:", socket.connected)
+        if (!session?.user?._id) return
+        const userId = session.user._id
+        socket.emit("join_room", userId)
         
-        socket.on("connect", () => {
-            console.log("Socket connected in add-friend page")
-        })
-        
-        socket.on("disconnect", () => {
-            console.log("Socket disconnected in add-friend page")
-        })
-        
-        return () => {
-            socket.off("connect")
-            socket.off("disconnect")
+        const handleResponse = (data) => {
+            // No toast here; UI page modal will display the update when user is there.
+            // Keeping listener so the sender stays in the room if they navigate back.
         }
-    }, [])
+        socket.on("friend_request_responded", handleResponse)
+
+        return () => {
+            socket.off("friend_request_responded", handleResponse)
+        }
+    }, [session?.user?._id])
         
     const form = useForm({
         resolver: zodResolver(addFriendSchema),

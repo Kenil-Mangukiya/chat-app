@@ -16,7 +16,20 @@ const messageSchema = new mongoose.Schema(
         }, 
         content : {
             type : String,
-            required : true
+            required : false
+        },
+        attachment: {
+            url: { type: String },
+            publicId: { type: String },
+            resourceType: { type: String, enum: ["image", "video", "raw"], default: undefined },
+            format: { type: String },
+            bytes: { type: Number },
+            width: { type: Number },
+            height: { type: Number },
+            pageCount: { type: Number },
+            originalFilename: { type: String },
+            secureUrl: { type: String },
+            thumbnailUrl: { type: String }
         }
     },{
         timestamps : true

@@ -97,6 +97,7 @@ app.prepare().then(async () => {
           senderid: messageData.senderid,
           receiverid: messageData.receiverid,
           content: messageData.content,
+          attachment: messageData.attachment,
         });
 
         await conversationModel.findByIdAndUpdate(conversation._id, {

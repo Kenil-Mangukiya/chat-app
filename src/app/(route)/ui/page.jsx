@@ -86,6 +86,99 @@ export default function WhatsAppUI() {
     return 0;
   }) // Total count for chat icon
   const [isProcessingMessage, setIsProcessingMessage] = useState(false) // Prevent duplicate processing
+  // File upload UI state
+  const [isUploading, setIsUploading] = useState(false)
+  const fileInputRef = useRef(null)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [showAttachMenu, setShowAttachMenu] = useState(false)
+
+  // Persist notification updates across reloads, respecting dismissals
+  const saveGlobalNotifications = (items) => {
+    try { sessionStorage.setItem('globalNotifications', JSON.stringify(items || [])) } catch {}
+  }
+  const loadGlobalNotifications = () => {
+    try { return JSON.parse(sessionStorage.getItem('globalNotifications') || '[]') } catch { return [] }
+  }
+
+  const openFilePicker = (accept) => {
+    if (!fileInputRef.current) return
+    fileInputRef.current.value = ""
+    fileInputRef.current.setAttribute('accept', accept)
+    fileInputRef.current.click()
+  }
+
+  const getCloudinarySignature = async () => {
+    const res = await fetch('/api/cloudinary-sign', { method: 'POST', body: JSON.stringify({ params: {} }) })
+    const data = await res.json()
+    if (!data.success) throw new Error(data.message || 'Signature failed')
+    return data.data
+  }
+
+  const uploadToCloudinary = async (file) => {
+    const { cloudName, apiKey, timestamp, folder, signature } = await getCloudinarySignature()
+    const form = new FormData()
+    form.append('file', file)
+    form.append('api_key', apiKey)
+    form.append('timestamp', timestamp)
+    form.append('signature', signature)
+    form.append('folder', folder)
+
+    const xhr = new XMLHttpRequest()
+    const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`
+    const promise = new Promise((resolve, reject) => {
+      xhr.open('POST', url)
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText))
+        else reject(new Error('Upload failed'))
+      }
+      xhr.onerror = () => reject(new Error('Upload error'))
+      xhr.send(form)
+    })
+    const result = await promise
+    return result
+  }
+
+  const handlePickFile = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      setIsUploading(true)
+      setUploadProgress(0)
+      const result = await uploadToCloudinary(file)
+      const attachment = {
+        url: result.secure_url,
+        secureUrl: result.secure_url,
+        publicId: result.public_id,
+        resourceType: result.resource_type,
+        format: result.format,
+        bytes: result.bytes,
+        width: result.width,
+        height: result.height,
+        pageCount: result.pages,
+        originalFilename: result.original_filename,
+        thumbnailUrl: result.secure_url // Cloudinary can transform via URL on render
+      }
+
+      // Send as a message with empty content but with attachment
+      if (receiverId.current && session?.user?._id) {
+        socket.emit('send_message', {
+          senderid: session.user._id,
+          receiverid: receiverId.current,
+          content: '',
+          attachment
+        })
+      }
+    } catch (err) {
+      toast.error('Upload failed')
+    } finally {
+      setIsUploading(false)
+      setUploadProgress(0)
+      setShowAttachMenu(false)
+    }
+  }
   const [processedMessages, setProcessedMessages] = useState(new Set()) // Track processed message IDs
   const [showSearchModal, setShowSearchModal] = useState(false) // Search modal state
   const [searchQuery, setSearchQuery] = useState("") // Search query
@@ -456,14 +549,8 @@ const FullUILoader = () => (
         // If user is not actively chatting with this sender, increment the count
         if (activeChat !== senderId) {
           console.log("User not actively chatting with sender, incrementing count");
-          
-          // Add notification for received messages
-          setNotifications(prev => [...prev, {
-            id: Date.now(),
-            message: content,
-            sender: senderId,
-            timestamp: new Date()
-          }]);
+          // Do NOT push chat messages into the bell notifications modal.
+          // Only increment chat icon counters below.
           
           // Add a small delay to ensure stable state updates
           setTimeout(() => {
@@ -1061,10 +1148,19 @@ useEffect(() => {
     // Sender gets response updates when receiver accepts/declines
     const handleFriendRequestResponded = (data) => {
       if (!data) return
-      const text = data.status === 'accepted'
-        ? `${data.receiverUsername} has accepted your friend request`
-        : `${data.receiverUsername} has declined your friend request`
-      toast.info(text, { position: "top-right", autoClose: 5000 })
+      // Push into notifications list (no toast)
+      setNotifications(prev => {
+        const list = prev ? [...prev] : []
+        list.unshift({
+          id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          message: data.status === 'accepted'
+            ? `${data.receiverUsername} has accepted your friend request`
+            : `${data.receiverUsername} has declined your friend request`,
+          timestamp: Date.now(),
+          type: 'friend_response',
+        })
+        return list.slice(0, 50) // cap list
+      })
       // If accepted, refresh friends list
       if (data.status === 'accepted' && session?.user?._id) {
         socket.emit("get_friends", session.user._id)
@@ -1091,6 +1187,21 @@ useEffect(() => {
       socket.offAny()
     }
   }, [session?.user?._id])
+
+  // Bridge notifications from global provider (in case user is on pages without UI component mounted)
+  useEffect(() => {
+    try {
+      const initial = JSON.parse(sessionStorage.getItem('globalNotifications') || '[]')
+      if (initial.length) setNotifications(prev => [...initial, ...(prev || [])].slice(0,50))
+    } catch {}
+
+    const onGlobal = (e) => {
+      const item = e.detail
+      setNotifications(prev => { const next=[item, ...(prev||[])].slice(0,50); saveGlobalNotifications(next); return next; })
+    }
+    window.addEventListener('global-notification', onGlobal)
+    return () => window.removeEventListener('global-notification', onGlobal)
+  }, [])
   
 
   return (
@@ -1139,6 +1250,12 @@ useEffect(() => {
                     <div className="font-medium">New Chats ({totalNewMessages})</div>
                     <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-green-500"></div>
                   </div>
+                  {/* Quick actions for attachments */}
+                  <div className="absolute top-7 left-1/2 transform -translate-x-1/2 bg-white border border-gray-200 rounded-lg shadow-md opacity-0 group-hover:opacity-100 transition-opacity p-2 flex space-x-2">
+                    <button onClick={() => openFilePicker('image/*')} className="text-xs px-2 py-1 rounded bg-blue-50 hover:bg-blue-100">Image</button>
+                    <button onClick={() => openFilePicker('video/*')} className="text-xs px-2 py-1 rounded bg-purple-50 hover:bg-purple-100">Video</button>
+                    <button onClick={() => openFilePicker('application/pdf,application/*')} className="text-xs px-2 py-1 rounded bg-gray-50 hover:bg-gray-100">Document</button>
+                  </div>
                 </div>
 
                 {/* Notification Icon with Dropdown */}
@@ -1146,10 +1263,6 @@ useEffect(() => {
                   <button
                     onClick={() => {
                       setShowNotifications(!showNotifications)
-                      // Clear only message notifications when opening dropdown, not friend requests
-                      if (!showNotifications && (notifications?.length || 0) > 0) {
-                        setNotifications([])
-                      }
                     }}
                     className="p-1 hover:bg-gray-200 rounded-full transition-colors duration-200 relative"
                   >
@@ -1167,24 +1280,71 @@ useEffect(() => {
                     <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-blue-500"></div>
                   </div>
                   
-                  {/* Beautiful Notifications Dropdown */}
+                  {/* Beautiful Notifications Modal (Centered with backdrop) */}
                   {showNotifications && (
-                    <div className="fixed top-16 right-4 sm:right-6 md:right-10 bg-white border border-gray-200 rounded-2xl shadow-2xl w-[22rem] sm:w-[24rem] md:w-[28rem] max-h-[70vh] overflow-y-auto z-[1000] backdrop-blur-sm bg-white/95 animate-[fadeIn_150ms_ease-out]">
+                    <div className="fixed inset-0 z-[1000] flex items-start sm:items-center justify-center">
+                      {/* Backdrop */}
+                      <div
+                        aria-hidden
+                        onClick={() => setShowNotifications(false)}
+                        className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity"
+                      />
+                      {/* Modal */}
+                      <div className="relative mt-20 sm:mt-0 bg-white border border-gray-200 rounded-2xl shadow-2xl w-[90vw] max-w-[32rem] max-h-[80vh] overflow-y-auto bg-white/95 animate-[fadeIn_150ms_ease-out]">
                       {/* Header */}
-                      <div className="p-4 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-t-2xl">
+                      <div className="p-4 border-b border-gray-100 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-t-2xl sticky top-0 z-10">
                         <div className="flex items-center justify-between">
                           <h3 className="font-bold text-gray-800 text-lg">Notifications</h3>
                           <div className="flex items-center space-x-2">
-                            {(friendRequests?.length || 0) > 0 && (
+                            {(((friendRequests?.length || 0) + (notifications?.length || 0)) > 0) && (
                               <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full font-medium">
-                                {(friendRequests?.length || 0)}
+                                {(friendRequests?.length || 0) + (notifications?.length || 0)}
                               </span>
                             )}
+                            <button
+                              aria-label="Close"
+                              onClick={() => setShowNotifications(false)}
+                              className="ml-2 text-gray-500 hover:text-gray-700 rounded-full p-1 hover:bg-white/60"
+                            >
+                              ×
+                            </button>
                           </div>
                         </div>
                       </div>
                       
                       <div className="p-4">
+                        {/* Updates (responses) Section */}
+                        {(notifications?.length || 0) > 0 && (
+                          <div className="mb-6">
+                            <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center">
+                              <Bell className="w-4 h-4 mr-2 text-indigo-500" />
+                              Updates
+                            </h4>
+                            <div className="space-y-3">
+                              {notifications.map((n) => (
+                                <div key={n.id} className="group p-4 bg-white rounded-xl border border-gray-200 hover:shadow-md transition-all duration-200 relative">
+                                  <button
+                                    aria-label="Dismiss notification"
+                                    onClick={() => setNotifications(prev => { const next=(prev||[]).filter(x=>x.id!==n.id); saveGlobalNotifications(next); return next; })}
+                                    className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
+                                  >
+                                    ×
+                                  </button>
+                                  <div className="flex items-start space-x-3">
+                                    <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center shadow">
+                                      <span className="text-white text-sm font-bold">!
+                                      </span>
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm text-gray-800">{n.message}</p>
+                                      <p className="text-xs text-gray-500 mt-1">{new Date(n.timestamp).toLocaleString?.() || new Date(n.timestamp).toLocaleString?.call(new Date(n.timestamp)) || ''}</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {/* Friend Requests Section */}
                         {(friendRequests?.length || 0) > 0 && (
                           <div className="mb-6">
@@ -1195,13 +1355,6 @@ useEffect(() => {
                             <div className="space-y-3">
                               {friendRequests.map((request) => (
                                 <div key={request._id} className="group p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100 hover:shadow-md transition-all duration-200 relative">
-                                  <button
-                                    aria-label="Dismiss notification"
-                                    onClick={() => setFriendRequests(prev => (prev || []).filter(r => r._id !== request._id))}
-                                    className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
-                                  >
-                                    ×
-                                  </button>
                                   <div className="flex items-start space-x-3">
                                     <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center shadow-lg">
                                       <span className="text-white text-sm font-bold">
@@ -1243,7 +1396,7 @@ useEffect(() => {
                         {/* Messages are not shown in notifications dropdown */}
 
                         {/* No notifications */}
-                        {(friendRequests?.length || 0) === 0 && (
+                        {((friendRequests?.length || 0) + (notifications?.length || 0)) === 0 && (
                           <div className="text-center py-8">
                             <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
                               <Bell className="w-8 h-8 text-gray-400" />
@@ -1255,15 +1408,16 @@ useEffect(() => {
                       </div>
                       
                       {/* Footer with clear button */}
-                      {(friendRequests?.length || 0) > 0 && (
+                      {(((friendRequests?.length || 0) + (notifications?.length || 0)) > 0) && (
                         <div className="p-4 border-t border-gray-100 bg-gray-50 rounded-b-2xl">
                           <div className="flex justify-between items-center">
                             <div className="text-xs text-gray-500">
-                              {(friendRequests?.length || 0)} total
+                              {(friendRequests?.length || 0) + (notifications?.length || 0)} total
                             </div>
                           </div>
                         </div>
                       )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1365,6 +1519,9 @@ useEffect(() => {
                   <span className="text-sm font-medium">Remove Friend</span>
                 </div>
               </div>
+
+            {/* Hidden input for file selection */}
+            <input ref={fileInputRef} type="file" className="hidden" onChange={handlePickFile} />
 
               <div 
                 onClick={SignOut}
@@ -1843,7 +2000,18 @@ useEffect(() => {
                       <Picker data={data} onEmojiSelect={addEmoji} />
                     </div>
                   )}
-                  <Paperclip size={24} className="text-gray-600" />
+                  <div className="relative">
+                    <button type="button" onClick={() => setShowAttachMenu(v => !v)}>
+                      <Paperclip size={24} className="text-gray-600 cursor-pointer" />
+                    </button>
+                    {showAttachMenu && (
+                      <div className="absolute bottom-9 left-0 bg-white border border-gray-200 rounded-lg shadow-lg p-2 z-10 w-40">
+                        <button type="button" onClick={() => openFilePicker('image/*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">Image</button>
+                        <button type="button" onClick={() => openFilePicker('video/*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">Video</button>
+                        <button type="button" onClick={() => openFilePicker('application/pdf,application/*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">Document</button>
+                      </div>
+                    )}
+                  </div>
                   <div className="flex-1 bg-white rounded-full px-4 py-2">
                     <FormProvider {...form}>
                       <form onSubmit={form.handleSubmit(onSubmit)} className="flex items-center space-x-2">
