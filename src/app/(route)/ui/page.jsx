@@ -91,6 +91,9 @@ export default function WhatsAppUI() {
   const fileInputRef = useRef(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [showAttachMenu, setShowAttachMenu] = useState(false)
+  // Preview and pending upload state
+  const [pendingAttachment, setPendingAttachment] = useState(null)
+  const [uploadingFile, setUploadingFile] = useState(null)
 
   // Persist notification updates across reloads, respecting dismissals
   const saveGlobalNotifications = (items) => {
@@ -114,40 +117,64 @@ export default function WhatsAppUI() {
     return data.data
   }
 
-  const uploadToCloudinary = async (file) => {
-    const { cloudName, apiKey, timestamp, folder, signature } = await getCloudinarySignature()
-    const form = new FormData()
-    form.append('file', file)
-    form.append('api_key', apiKey)
-    form.append('timestamp', timestamp)
-    form.append('signature', signature)
-    form.append('folder', folder)
-
-    const xhr = new XMLHttpRequest()
-    const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`
-    const promise = new Promise((resolve, reject) => {
-      xhr.open('POST', url)
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
-      }
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText))
-        else reject(new Error('Upload failed'))
-      }
-      xhr.onerror = () => reject(new Error('Upload error'))
-      xhr.send(form)
-    })
-    const result = await promise
-    return result
-  }
 
   const handlePickFile = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    
+    // Clean up previous preview URL if exists
+    if (pendingAttachment?.url) {
+      URL.revokeObjectURL(pendingAttachment.url)
+    }
+    
+    // Create preview object
+    const preview = {
+      file,
+      url: URL.createObjectURL(file),
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      isImage: file.type.startsWith('image/'),
+      isVideo: file.type.startsWith('video/'),
+      isAudio: file.type.startsWith('audio/'),
+      isDocument: !file.type.startsWith('image/') && !file.type.startsWith('video/') && !file.type.startsWith('audio/')
+    }
+    
+    setPendingAttachment(preview)
+    setShowAttachMenu(false)
+  }
+
+  const uploadFileToCloudinary = async (file) => {
     try {
       setIsUploading(true)
+      setUploadingFile(file)
       setUploadProgress(0)
-      const result = await uploadToCloudinary(file)
+      
+      const { cloudName, apiKey, timestamp, signature, folder } = await getCloudinarySignature()
+      
+      const form = new FormData()
+      form.append('file', file)
+      form.append('api_key', apiKey)
+      form.append('timestamp', timestamp)
+      form.append('signature', signature)
+      form.append('folder', folder)
+
+      const xhr = new XMLHttpRequest()
+      const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`
+      const promise = new Promise((resolve, reject) => {
+        xhr.open('POST', url)
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
+        }
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText))
+          else reject(new Error('Upload failed'))
+        }
+        xhr.onerror = () => reject(new Error('Upload error'))
+        xhr.send(form)
+      })
+      const result = await promise
+      
       const attachment = {
         url: result.secure_url,
         secureUrl: result.secure_url,
@@ -159,24 +186,45 @@ export default function WhatsAppUI() {
         height: result.height,
         pageCount: result.pages,
         originalFilename: result.original_filename,
-        thumbnailUrl: result.secure_url // Cloudinary can transform via URL on render
+        thumbnailUrl: result.secure_url
       }
-
-      // Send as a message with empty content but with attachment
-      if (receiverId.current && session?.user?._id) {
-        socket.emit('send_message', {
-          senderid: session.user._id,
-          receiverid: receiverId.current,
-          content: '',
-          attachment
-        })
-      }
+      
+      return attachment
     } catch (err) {
       toast.error('Upload failed')
+      throw err
     } finally {
       setIsUploading(false)
+      setUploadingFile(null)
       setUploadProgress(0)
-      setShowAttachMenu(false)
+    }
+  }
+
+  const sendMessageWithAttachment = async () => {
+    if (!pendingAttachment || !receiverId.current || !session?.user?._id) return
+    
+    try {
+      const attachment = await uploadFileToCloudinary(pendingAttachment.file)
+      
+      // Send as a message with empty content but with attachment
+      socket.emit('send_message', {
+        senderid: session.user._id,
+        receiverid: receiverId.current,
+        content: '',
+        attachment
+      })
+      
+      // Clear pending attachment and clean up object URL
+      if (pendingAttachment?.url) {
+        URL.revokeObjectURL(pendingAttachment.url)
+      }
+      setPendingAttachment(null)
+      // Clear the file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    } catch (err) {
+      console.error('Failed to send message with attachment:', err)
     }
   }
   const [processedMessages, setProcessedMessages] = useState(new Set()) // Track processed message IDs
@@ -326,15 +374,22 @@ const FullUILoader = () => (
   }, [searchParams]);
 
   useEffect(() => {
-    if(content.length == 0)
-    {
-      setEnableSend(false)
+    // Enable send if there's content OR a pending attachment, but disable during upload
+    const hasContent = content.length > 0
+    const hasPendingAttachment = pendingAttachment !== null
+    const isUploadingFile = isUploading
+    
+    setEnableSend((hasContent || hasPendingAttachment) && !isUploadingFile)
+  }, [content, pendingAttachment, isUploading]);
+
+  // Cleanup object URLs on unmount
+  useEffect(() => {
+    return () => {
+      if (pendingAttachment?.url) {
+        URL.revokeObjectURL(pendingAttachment.url)
+      }
     }
-    if(content.length > 0)
-    {
-      setEnableSend(true)
-    }
-    }, [content]);
+  }, [pendingAttachment?.url]);
 
   useEffect(() => {
   if (session) {
@@ -514,9 +569,16 @@ const FullUILoader = () => (
   }
 }, [messages]);
 
-  const onSubmit = (data) => {
-    if (receiverId.current && session?.user?._id && data.content.length > 0) {
-      sendMessage(session.user._id, receiverId.current, data.content);
+  const onSubmit = async (data) => {
+    if (receiverId.current && session?.user?._id) {
+      // If there's a pending attachment, send it
+      if (pendingAttachment) {
+        await sendMessageWithAttachment();
+      }
+      // If there's text content, send it
+      if (data.content.length > 0) {
+        sendMessage(session.user._id, receiverId.current, data.content);
+      }
       form.reset();
       setContent("")
     }
@@ -686,8 +748,17 @@ const FullUILoader = () => (
   
 };
 
-  const copyMessage = async (value) => {
-    await navigator.clipboard.writeText(value)
+  const copyMessage = async (message) => {
+    if (message.attachment) {
+      // For messages with attachments, copy the attachment URL
+      const attachmentUrl = message.attachment.secureUrl || message.attachment.url
+      await navigator.clipboard.writeText(attachmentUrl)
+      toast.success('Attachment URL copied to clipboard')
+    } else {
+      // For text messages, copy the content
+      await navigator.clipboard.writeText(message.content)
+      toast.success('Message copied to clipboard')
+    }
   }
 
   useEffect(() => {
@@ -1916,11 +1987,11 @@ useEffect(() => {
                           className={`flex ${message.senderid == session?.user?._id ? 'justify-end' : 'justify-start'} ${message.content == "Message Deleted" ? "mr-15" : ""}`}
                         >
                           <div className="flex items-center group">
-                            {/* Copy button for receiver messages (left side) */}
-                            {message.senderid !== session?.user?._id && message.content !== "Message Deleted" && (
+                            {/* Copy button for receiver messages (left side) - only for text messages */}
+                            {message.senderid !== session?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
                               <div className="mr-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                                 <button 
-                                  onClick={() => copyMessage(message.content)}
+                                  onClick={() => copyMessage(message)}
                                   className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-full shadow-sm transform hover:scale-110 transition-all duration-200"
                                   title="Copy message"
                                 >
@@ -1933,34 +2004,360 @@ useEffect(() => {
                             )}
 
                             <div
-                              className={`max-w-xs md:max-w-md px-4 py-2 rounded-lg ${
+                              className={`max-w-xs lg:max-w-md px-3 py-2 rounded-lg shadow-sm ${
                                 message.senderid === session?.user?._id
                                   ? 'bg-green-100 rounded-tr-none'
                                   : 'bg-white rounded-tl-none'
                               } ${message.content == "Message Deleted" ? "bg-red-300 rounded-tr-none pointer-events-none opacity-50" : ""}`}
                             >
-                              <p className="text-sm">
-                                {isSearchActive && searchQuery && message.content.toLowerCase().includes(searchQuery.toLowerCase()) ? (
-                                  <span>
-                                    {message.content.split(new RegExp(`(${searchQuery})`, 'gi')).map((part, i) => 
-                                      part.toLowerCase() === searchQuery.toLowerCase() ? (
-                                        <mark key={i} className="bg-yellow-200 px-1 rounded">{part}</mark>
-                                      ) : (
-                                        <span key={i}>{part}</span>
-                                      )
-                                    )}
-                                  </span>
-                                ) : (
-                                  message.content
-                                )}
-                              </p>
+                              {/* Render attachment if exists and message is not deleted */}
+                              {message.attachment && message.attachment.url && message.content !== "Message Deleted" && (
+                                <div className="mb-2">
+                                  
+                                  {message.attachment.resourceType === 'image' && message.attachment.format && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(message.attachment.format.toLowerCase()) && !message.attachment.format.toLowerCase().includes('pdf') && (
+                                    <div className="relative">
+                                      <img 
+                                        src={message.attachment.secureUrl || message.attachment.url} 
+                                        alt={message.attachment.originalFilename || 'Image'} 
+                                        className="max-w-80 max-h-80 w-auto h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity object-cover"
+                                        onClick={() => window.open(message.attachment.secureUrl || message.attachment.url, '_blank')}
+                                        onError={(e) => {
+                                          e.target.style.display = 'none'
+                                          console.error('Failed to load image:', message.attachment.url)
+                                        }}
+                                      />
+                                      {message.content !== "Message Deleted" && (
+                                        <div className="absolute top-2 right-2">
+                                          <button
+                                            onClick={async (e) => {
+                                              e.stopPropagation()
+                                              try {
+                                                const response = await fetch(message.attachment.secureUrl || message.attachment.url)
+                                                const blob = await response.blob()
+                                                const url = window.URL.createObjectURL(blob)
+                                                const link = document.createElement('a')
+                                                link.href = url
+                                                link.download = message.attachment.originalFilename || 'image'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                                window.URL.revokeObjectURL(url)
+                                              } catch (error) {
+                                                console.error('Download failed:', error)
+                                                // Fallback to direct link
+                                                const link = document.createElement('a')
+                                                link.href = message.attachment.secureUrl || message.attachment.url
+                                                link.download = message.attachment.originalFilename || 'image'
+                                                link.target = '_blank'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                              }
+                                            }}
+                                            className="bg-black bg-opacity-50 text-white p-1 rounded-full hover:bg-opacity-70"
+                                            title="Download image"
+                                          >
+                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                              <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                            </svg>
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  
+                                  {message.attachment.resourceType === 'video' && (
+                                    <div className="relative">
+                                      <video 
+                                        src={message.attachment.secureUrl || message.attachment.url} 
+                                        controls
+                                        className="max-w-80 max-h-80 w-auto h-auto rounded-lg object-cover"
+                                        poster={message.attachment.thumbnailUrl || message.attachment.secureUrl || message.attachment.url}
+                                        preload="metadata"
+                                        onError={(e) => {
+                                          console.error('Failed to load video:', message.attachment.url)
+                                        }}
+                                      />
+                                      {message.content !== "Message Deleted" && (
+                                        <div className="absolute top-2 right-2">
+                                          <button
+                                            onClick={async (e) => {
+                                              e.stopPropagation()
+                                              try {
+                                                const response = await fetch(message.attachment.secureUrl || message.attachment.url)
+                                                const blob = await response.blob()
+                                                const url = window.URL.createObjectURL(blob)
+                                                const link = document.createElement('a')
+                                                link.href = url
+                                                link.download = message.attachment.originalFilename || 'video'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                                window.URL.revokeObjectURL(url)
+                                              } catch (error) {
+                                                console.error('Download failed:', error)
+                                                // Fallback to direct link
+                                                const link = document.createElement('a')
+                                                link.href = message.attachment.secureUrl || message.attachment.url
+                                                link.download = message.attachment.originalFilename || 'video'
+                                                link.target = '_blank'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                              }
+                                            }}
+                                            className="bg-black bg-opacity-50 text-white p-1 rounded-full hover:bg-opacity-70"
+                                            title="Download video"
+                                          >
+                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                              <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                            </svg>
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  
+                                  {message.attachment.resourceType === 'video' && message.attachment.format && ['mp3', 'wav', 'ogg', 'aac', 'm4a'].includes(message.attachment.format.toLowerCase()) && (
+                                    <div className="flex items-center space-x-4 p-4 bg-purple-50 rounded-lg border max-w-80">
+                                      <div className="w-10 h-10 bg-purple-100 rounded flex items-center justify-center flex-shrink-0">
+                                        <svg className="w-5 h-5 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
+                                          <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
+                                        </svg>
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium text-gray-900 truncate">{message.attachment.originalFilename}</p>
+                                        <p className="text-xs text-gray-500">
+                                          {message.attachment.bytes ? `${(message.attachment.bytes / 1024 / 1024).toFixed(2)} MB` : 'Audio'}
+                                        </p>
+                                      </div>
+                                      {message.content !== "Message Deleted" && (
+                                        <div className="flex space-x-1">
+                                          <button
+                                            onClick={async (e) => {
+                                              e.stopPropagation()
+                                              try {
+                                                const response = await fetch(message.attachment.secureUrl || message.attachment.url)
+                                                const blob = await response.blob()
+                                                const url = window.URL.createObjectURL(blob)
+                                                const link = document.createElement('a')
+                                                link.href = url
+                                                link.download = message.attachment.originalFilename || 'audio'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                                window.URL.revokeObjectURL(url)
+                                              } catch (error) {
+                                                console.error('Download failed:', error)
+                                                // Fallback to direct link
+                                                const link = document.createElement('a')
+                                                link.href = message.attachment.secureUrl || message.attachment.url
+                                                link.download = message.attachment.originalFilename || 'audio'
+                                                link.target = '_blank'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                              }
+                                            }}
+                                            className="bg-purple-500 hover:bg-purple-600 text-white p-1 rounded-full transition-colors flex-shrink-0"
+                                            title="Download audio"
+                                          >
+                                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                              <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                            </svg>
+                                          </button>
+                                          {message.senderid === session?.user?._id && (
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                deleteMessage(message._id)
+                                              }}
+                                              className="bg-red-500 hover:bg-red-600 text-white p-1 rounded-full transition-colors flex-shrink-0"
+                                              title="Delete audio"
+                                            >
+                                              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                                <path fillRule="evenodd" d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" clipRule="evenodd" />
+                                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                              </svg>
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  
+                                  {(message.attachment.resourceType === 'raw' || message.attachment.format?.toLowerCase().includes('pdf')) && (
+                                    <div className="flex items-center space-x-4 p-4 bg-gray-50 rounded-lg border max-w-80">
+                                      <div className="w-10 h-10 bg-red-100 rounded flex items-center justify-center flex-shrink-0">
+                                        {message.attachment.format?.toLowerCase().includes('pdf') ? (
+                                          <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                                          </svg>
+                                        ) : (
+                                          <svg className="w-4 h-4 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                                          </svg>
+                                        )}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-medium text-gray-900 truncate">{message.attachment.originalFilename}</p>
+                                        <p className="text-xs text-gray-500">
+                                          {message.attachment.bytes ? `${(message.attachment.bytes / 1024 / 1024).toFixed(2)} MB` : 'Document'}
+                                        </p>
+                                      </div>
+                                      {message.content !== "Message Deleted" && (
+                                        <div className="flex space-x-1">
+                                          <button
+                                            onClick={async (e) => {
+                                              e.stopPropagation()
+                                              try {
+                                                const response = await fetch(message.attachment.secureUrl || message.attachment.url)
+                                                const blob = await response.blob()
+                                                const url = window.URL.createObjectURL(blob)
+                                                const link = document.createElement('a')
+                                                link.href = url
+                                                link.download = message.attachment.originalFilename || 'document'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                                window.URL.revokeObjectURL(url)
+                                              } catch (error) {
+                                                console.error('Download failed:', error)
+                                                // Fallback to direct link
+                                                const link = document.createElement('a')
+                                                link.href = message.attachment.secureUrl || message.attachment.url
+                                                link.download = message.attachment.originalFilename || 'document'
+                                                link.target = '_blank'
+                                                document.body.appendChild(link)
+                                                link.click()
+                                                document.body.removeChild(link)
+                                              }
+                                            }}
+                                            className="bg-blue-500 hover:bg-blue-600 text-white p-1 rounded-full transition-colors flex-shrink-0"
+                                            title="Download document"
+                                          >
+                                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                              <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                            </svg>
+                                          </button>
+                                          {message.senderid === session?.user?._id && (
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                deleteMessage(message._id)
+                                              }}
+                                              className="bg-red-500 hover:bg-red-600 text-white p-1 rounded-full transition-colors flex-shrink-0"
+                                              title="Delete document"
+                                            >
+                                              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                                <path fillRule="evenodd" d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" clipRule="evenodd" />
+                                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                              </svg>
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  
+                                  {/* Fallback for unknown attachment types or documents */}
+                                  {(!message.attachment.resourceType || !['image', 'video', 'raw'].includes(message.attachment.resourceType)) && (
+                                    <div className="flex items-center space-x-2 p-2 bg-gray-50 rounded-lg border max-w-48">
+                                      <div className="w-8 h-8 bg-gray-100 rounded flex items-center justify-center flex-shrink-0">
+                                        <svg className="w-4 h-4 text-gray-600" fill="currentColor" viewBox="0 0 20 20">
+                                          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                                        </svg>
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-medium text-gray-900 truncate">{message.attachment.originalFilename || 'File'}</p>
+                                        <p className="text-xs text-gray-500">
+                                          {message.attachment.bytes ? `${(message.attachment.bytes / 1024 / 1024).toFixed(2)} MB` : 'Attachment'}
+                                        </p>
+                                      </div>
+                                      {message.content !== "Message Deleted" && (
+                                        <button
+                                          onClick={async (e) => {
+                                            e.stopPropagation()
+                                            try {
+                                              const response = await fetch(message.attachment.secureUrl || message.attachment.url)
+                                              const blob = await response.blob()
+                                              const url = window.URL.createObjectURL(blob)
+                                              const link = document.createElement('a')
+                                              link.href = url
+                                              link.download = message.attachment.originalFilename || 'file'
+                                              document.body.appendChild(link)
+                                              link.click()
+                                              document.body.removeChild(link)
+                                              window.URL.revokeObjectURL(url)
+                                            } catch (error) {
+                                              console.error('Download failed:', error)
+                                              // Fallback to direct link
+                                              const link = document.createElement('a')
+                                              link.href = message.attachment.secureUrl || message.attachment.url
+                                              link.download = message.attachment.originalFilename || 'file'
+                                              link.target = '_blank'
+                                              document.body.appendChild(link)
+                                              link.click()
+                                              document.body.removeChild(link)
+                                            }
+                                          }}
+                                          className="bg-gray-500 hover:bg-gray-600 text-white p-1 rounded-full transition-colors flex-shrink-0"
+                                          title="Download file"
+                                        >
+                                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                          </svg>
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {/* Render text content if exists */}
+                              {message.content && message.content.trim() !== '' && (
+                                <p className="text-sm">
+                                  {isSearchActive && searchQuery && message.content.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                    <span>
+                                      {message.content.split(new RegExp(`(${searchQuery})`, 'gi')).map((part, i) => 
+                                        part.toLowerCase() === searchQuery.toLowerCase() ? (
+                                          <mark key={i} className="bg-yellow-200 px-1 rounded">{part}</mark>
+                                        ) : (
+                                          <span key={i}>{part}</span>
+                                        )
+                                      )}
+                                    </span>
+                                  ) : (
+                                    message.content
+                                  )}
+                                </p>
+                              )}
+                              
+                              {/* Show beautiful deletion message for attachments */}
+                              {message.content === "Message Deleted" && message.attachment && (
+                                <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                                  <div className="flex items-center space-x-2">
+                                    <svg className="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" clipRule="evenodd" />
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                    </svg>
+                                    <span className="text-sm text-red-700 font-medium">
+                                      {message.attachment.resourceType === 'image' ? 'Image was deleted' :
+                                       message.attachment.resourceType === 'video' ? 'Video was deleted' :
+                                       message.attachment.format?.toLowerCase().includes('pdf') ? 'Document was deleted' :
+                                       message.attachment.resourceType === 'video' && message.attachment.format && ['mp3', 'wav', 'ogg', 'aac', 'm4a'].includes(message.attachment.format.toLowerCase()) ? 'Audio was deleted' :
+                                       'File was deleted'}
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                             
-                            {/* Copy and Delete buttons for sender messages (right side) */}
-                            {message.senderid === session?.user?._id && message.content !== "Message Deleted" && (
+                            {/* Copy and Delete buttons for sender messages (right side) - only for text messages */}
+                            {message.senderid === session?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
                               <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-row space-x-1 items-center">
                                 <button 
-                                  onClick={() => copyMessage(message.content)}
+                                  onClick={() => copyMessage(message)}
                                   className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-full shadow-sm transform hover:scale-110 transition-all duration-200"
                                   title="Copy message"
                                 >
@@ -2006,12 +2403,84 @@ useEffect(() => {
                     </button>
                     {showAttachMenu && (
                       <div className="absolute bottom-9 left-0 bg-white border border-gray-200 rounded-lg shadow-lg p-2 z-10 w-40">
-                        <button type="button" onClick={() => openFilePicker('image/*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">Image</button>
-                        <button type="button" onClick={() => openFilePicker('video/*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">Video</button>
-                        <button type="button" onClick={() => openFilePicker('application/pdf,application/*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">Document</button>
+                        <button type="button" onClick={() => openFilePicker('*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">📎 Attach File</button>
                       </div>
                     )}
                   </div>
+                  {/* Upload Progress Indicator */}
+                  {isUploading && (
+                    <div className="mb-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-8 h-8 bg-blue-100 rounded flex items-center justify-center">
+                          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-blue-900">Uploading...</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* File Preview Component */}
+                  {pendingAttachment && !isUploading && (
+                    <div className="mb-3 p-3 bg-gray-50 rounded-lg border">
+                      <div className="flex items-center space-x-3">
+                        {pendingAttachment.isImage && (
+                          <img 
+                            src={pendingAttachment.url} 
+                            alt="Preview" 
+                            className="w-16 h-16 object-cover rounded"
+                          />
+                        )}
+                        {pendingAttachment.isVideo && (
+                          <video 
+                            src={pendingAttachment.url} 
+                            className="w-16 h-16 object-cover rounded"
+                            controls={false}
+                          />
+                        )}
+                        {pendingAttachment.isAudio && (
+                          <div className="w-16 h-16 bg-purple-100 rounded flex items-center justify-center">
+                            <svg className="w-8 h-8 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                        {pendingAttachment.isDocument && (
+                          <div className="w-16 h-16 bg-blue-100 rounded flex items-center justify-center">
+                            <svg className="w-8 h-8 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-900">{pendingAttachment.name}</p>
+                          <p className="text-xs text-gray-500">
+                            {(pendingAttachment.size / 1024 / 1024).toFixed(2)} MB
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Clean up object URL
+                            if (pendingAttachment?.url) {
+                              URL.revokeObjectURL(pendingAttachment.url)
+                            }
+                            setPendingAttachment(null)
+                            if (fileInputRef.current) {
+                              fileInputRef.current.value = ''
+                            }
+                          }}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex-1 bg-white rounded-full px-4 py-2">
                     <FormProvider {...form}>
                       <form onSubmit={form.handleSubmit(onSubmit)} className="flex items-center space-x-2">
@@ -2067,16 +2536,33 @@ useEffect(() => {
 
                         <div className="relative group">
                           <Button type="submit" className="bg-green-500" disabled={!enableSend}>
-                            <Send size={24} />
+                            {isUploading ? (
+                              <div className="flex items-center space-x-2">
+                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                <span className="text-sm">{uploadProgress}%</span>
+                              </div>
+                            ) : (
+                              <Send size={24} />
+                            )}
                           </Button>
                           <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-400 to-green-800 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap z-10">
-                            <div className="font-medium">Send Message</div>
+                            <div className="font-medium">
+                              {isUploading ? `Uploading... ${uploadProgress}%` : 'Send Message'}
+                            </div>
                             <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-green-500"></div>
                           </div>
                         </div>
                       </form>
                     </FormProvider>
                   </div>
+                  
+                  {/* Hidden file input */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={handlePickFile}
+                  />
                 </div>
               </>
             ) : (

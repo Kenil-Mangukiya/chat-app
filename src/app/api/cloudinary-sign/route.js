@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth"
 import { authOption as authOptions } from "../auth/[...nextauth]/option"
 import { response } from "@/util/response"
-import cloudinary from "@/lib/cloudinary"
+import { signParams } from "@/lib/cloudinary"
 
 export async function POST(req) {
   const session = await getServerSession(authOptions)
@@ -12,7 +12,7 @@ export async function POST(req) {
   const folder = process.env.CLOUDINARY_UPLOAD_FOLDER || `messager/${session.user._id}`
   const timestamp = Math.floor(Date.now() / 1000)
 
-  const signature = cloudinary.utils.api_sign_request(
+  const signature = signParams(
     { timestamp, folder, ...params },
     process.env.CLOUDINARY_API_SECRET
   )
