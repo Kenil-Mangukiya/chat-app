@@ -180,6 +180,9 @@ export default function WhatsAppUI() {
         secureUrl: result.secure_url,
         publicId: result.public_id,
         resourceType: result.resource_type,
+        deliveryType: result.type, // upload | private | authenticated
+        accessMode: result.access_mode, // public | authenticated
+        version: result.version,
         format: result.format,
         bytes: result.bytes,
         width: result.width,
@@ -2211,8 +2214,27 @@ useEffect(() => {
                                             onClick={async (e) => {
                                               e.stopPropagation()
                                               try {
-                                                const response = await fetch(message.attachment.secureUrl || message.attachment.url)
-                                                const blob = await response.blob()
+                                                const res = await fetch('/api/cloudinary-download', {
+                                                  method: 'POST',
+                                                  headers: { 'Content-Type': 'application/json' },
+                                                  body: JSON.stringify({
+                                                    publicId: message.attachment.publicId,
+                                                    resourceType: message.attachment.resourceType,
+                                                    deliveryType: message.attachment.deliveryType,
+                                                    accessMode: message.attachment.accessMode,
+                                                    version: message.attachment.version,
+                                                    format: message.attachment.format,
+                                                    downloadName: message.attachment.originalFilename,
+                                                  })
+                                                })
+                                                if (!res.ok) throw new Error('Failed to sign download URL')
+                                                const data = await res.json()
+                                                const signedUrl = data?.data?.url || data?.url
+                                                if (!signedUrl) throw new Error('No signed URL returned')
+
+                                                const fileResp = await fetch(signedUrl)
+                                                if (!fileResp.ok) throw new Error('Download request failed')
+                                                const blob = await fileResp.blob()
                                                 const url = window.URL.createObjectURL(blob)
                                                 const link = document.createElement('a')
                                                 link.href = url
@@ -2223,7 +2245,19 @@ useEffect(() => {
                                                 window.URL.revokeObjectURL(url)
                                               } catch (error) {
                                                 console.error('Download failed:', error)
-                                                // Fallback to direct link
+                                                try {
+                                                  const orig = message.attachment.secureUrl || message.attachment.url
+                                                  const resp = await fetch(orig)
+                                                  const blob = await resp.blob()
+                                                  const url = window.URL.createObjectURL(blob)
+                                                  const link = document.createElement('a')
+                                                  link.href = url
+                                                  link.download = message.attachment.originalFilename || 'document'
+                                                  document.body.appendChild(link)
+                                                  link.click()
+                                                  document.body.removeChild(link)
+                                                  window.URL.revokeObjectURL(url)
+                                                } catch (e2) {
                                                 const link = document.createElement('a')
                                                 link.href = message.attachment.secureUrl || message.attachment.url
                                                 link.download = message.attachment.originalFilename || 'document'
@@ -2231,6 +2265,7 @@ useEffect(() => {
                                                 document.body.appendChild(link)
                                                 link.click()
                                                 document.body.removeChild(link)
+                                                }
                                               }
                                             }}
                                             className="bg-blue-500 hover:bg-blue-600 text-white p-1 rounded-full transition-colors flex-shrink-0"
