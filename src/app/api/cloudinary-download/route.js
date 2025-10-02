@@ -22,7 +22,8 @@ export async function POST(req) {
 
     const lowerFormat = (format || "").toLowerCase()
     const rawFormats = new Set(["pdf","doc","docx","xls","xlsx","ppt","pptx","txt","csv","json","zip","rar","7z","xml","md","rtf","odt","ods","odp"]) 
-    const isRaw = (resourceType === "raw") || (lowerFormat && rawFormats.has(lowerFormat))
+    // Trust reported resourceType when present; only fall back to raw if unknown
+    const resourceTypeToUse = resourceType || (lowerFormat && rawFormats.has(lowerFormat) ? "raw" : "image")
     const typeToUse = (deliveryType === "private" || deliveryType === "authenticated") 
       ? deliveryType 
       : (accessMode === "authenticated" ? "authenticated" : "upload")
@@ -30,7 +31,7 @@ export async function POST(req) {
 
     // Build a signed delivery URL. For documents, use resource_type raw.
     const url = cloudinary.v2.url(publicId, {
-      resource_type: isRaw ? "raw" : (resourceType || "image"),
+      resource_type: resourceTypeToUse,
       type: typeToUse,
       sign_url: true,
       secure: true,
