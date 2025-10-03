@@ -193,6 +193,11 @@ app.prepare().then(async () => {
       }
     });
 
+    // Group events
+    socket.on("group_member_added", ({ groupId, userId }) => {
+      io.to(userId).emit("group_invited", { groupId });
+    });
+
     socket.on("call_ended",({receiverId,endedBy,direction}) => {
       console.log("sender :_________",receiverId)
       console.log("call ended is called from sender end")

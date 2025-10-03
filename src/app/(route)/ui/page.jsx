@@ -239,6 +239,15 @@ export default function WhatsAppUI() {
   const [showNotifications, setShowNotifications] = useState(false) // Notification dropdown state
   const [notifications, setNotifications] = useState([]) // Notification messages
   const [friendRequests, setFriendRequests] = useState([]) // Friend requests
+  const [showCreateGroup, setShowCreateGroup] = useState(false)
+  const [groups, setGroups] = useState([])
+  const [groupInvites, setGroupInvites] = useState([])
+  const [newGroupName, setNewGroupName] = useState("")
+  const [selectedInviteeIds, setSelectedInviteeIds] = useState([])
+  const [groupSubmitAttempted, setGroupSubmitAttempted] = useState(false)
+  const [groupSearch, setGroupSearch] = useState("")
+  const [groupFilteredFriends, setGroupFilteredFriends] = useState([])
+  const [groupNameServerError, setGroupNameServerError] = useState("")
   const notificationRef = useRef(null)
 
   
@@ -1113,6 +1122,34 @@ useEffect(() => {
     }
   }, [])
 
+  // Load groups and invites once session is ready
+  useEffect(() => {
+    const loadGroups = async () => {
+      try {
+        const res = await fetch('/api/groups/list')
+        const data = await res.json()
+        if (data?.success) {
+          setGroups(data.data.groups || [])
+          setGroupInvites(data.data.invites || [])
+        }
+      } catch (e) {}
+    }
+    if (session?.user?._id) loadGroups()
+  }, [session?.user?._id])
+
+  // Listen for real-time group invites
+  useEffect(() => {
+    if (!session?.user?._id) return
+    const onInvite = (invite) => {
+      setGroupInvites((prev) => [invite, ...prev])
+      setShowNotifications(true)
+    }
+    socket.on('group_invite_received', onInvite)
+    return () => {
+      socket.off('group_invite_received', onInvite)
+    }
+  }, [session?.user?._id])
+
   // Fetch friend requests
   const fetchFriendRequests = async () => {
     try {
@@ -1299,6 +1336,20 @@ useEffect(() => {
                 </div>
               </div>
               <div className="flex items-center space-x-4">
+                {/* Create Group Icon with Tooltip */}
+                <div className="relative group">
+                  <button
+                    onClick={() => setShowCreateGroup(true)}
+                    className="p-1 hover:bg-gray-200 rounded-full transition-colors duration-200"
+                    aria-label="Create Group"
+                  >
+                    <Users size={20} className="text-gray-600 hover:text-purple-600 transition-colors duration-200" />
+                  </button>
+                  <div className="absolute -top-7 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-purple-500 to-pink-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                    <div className="font-medium">Create Group</div>
+                    <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-purple-500"></div>
+                  </div>
+                </div>
                 {/* Add Friend Icon with Tooltip */}
                 <div className="relative group">
                   <UserPlus 
@@ -1387,6 +1438,41 @@ useEffect(() => {
                       </div>
                       
                       <div className="p-4">
+                        {/* Group Invites */}
+                        {(groupInvites?.length || 0) > 0 && (
+                          <div className="mb-6">
+                            <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center">
+                              <Users className="w-4 h-4 mr-2 text-purple-500" />
+                              Group Invites
+                            </h4>
+                            <div className="space-y-3">
+                              {groupInvites.map((gi)=> (
+                                <div key={gi._id} className="p-3 rounded-lg border flex items-center justify-between">
+                                  <div>
+                                    <div className="text-sm font-medium text-gray-800">{gi.groupId?.name || 'Group'}</div>
+                                    <div className="text-xs text-gray-500">Invitation</div>
+                                  </div>
+                                  <div className="flex items-center space-x-2">
+                                    <button className="px-3 py-1 rounded-lg bg-green-600 text-white text-xs" onClick={async ()=>{
+                                      const res = await fetch('/api/groups/respond-invite',{method:'POST', body: JSON.stringify({inviteId: gi._id, action: 'accept'})})
+                                      const d = await res.json();
+                                      if(d?.success){
+                                        setGroupInvites((arr)=> arr.filter((x)=> x._id !== gi._id))
+                                      }
+                                    }}>Accept</button>
+                                    <button className="px-3 py-1 rounded-lg bg-gray-200 text-gray-700 text-xs" onClick={async ()=>{
+                                      const res = await fetch('/api/groups/respond-invite',{method:'POST', body: JSON.stringify({inviteId: gi._id, action: 'decline'})})
+                                      const d = await res.json();
+                                      if(d?.success){
+                                        setGroupInvites((arr)=> arr.filter((x)=> x._id !== gi._id))
+                                      }
+                                    }}>Decline</button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {/* Updates (responses) Section */}
                         {(notifications?.length || 0) > 0 && (
                           <div className="mb-6">
@@ -1657,6 +1743,102 @@ useEffect(() => {
               )}
             </div>
           </div>
+
+                {/* Create Group Modal */}
+                {showCreateGroup && (
+                  <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+                    <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowCreateGroup(false)} />
+                    <div className="relative bg-white rounded-2xl shadow-2xl w-[92vw] max-w-[680px] overflow-hidden">
+                      <div className="p-5 border-b bg-gradient-to-r from-purple-50 to-pink-50">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <div className="p-2 rounded-lg bg-purple-100">
+                              <Users className="text-purple-600" size={18} />
+                            </div>
+                            <h3 className="font-semibold text-gray-800">Create Group</h3>
+                          </div>
+                          <button className="text-gray-500 hover:text-gray-700" onClick={() => setShowCreateGroup(false)}>×</button>
+                        </div>
+                      </div>
+                      <div className="p-5 space-y-4">
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">Group name</label>
+                          <input value={newGroupName} onChange={(e)=>{setNewGroupName(e.target.value); setGroupNameServerError("")}} placeholder="e.g. Weekend Trip" className={`w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 ${groupSubmitAttempted && newGroupName.trim().length === 0 ? 'border-red-300 focus:ring-red-300' : groupNameServerError ? 'border-red-300 focus:ring-red-300' : 'focus:ring-purple-400'}`} />
+                          {groupSubmitAttempted && newGroupName.trim().length === 0 && (
+                            <p className="mt-1 text-xs text-red-500">Group name is required.</p>
+                          )}
+                          {groupNameServerError && (
+                            <p className="mt-1 text-xs text-red-500">{groupNameServerError}</p>
+                          )}
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <label className="block text-xs text-gray-600">Invite friends</label>
+                            <span className="text-xs text-gray-500">{selectedInviteeIds.length} selected</span>
+                          </div>
+                          <div className="mb-2">
+                            <input
+                              type="text"
+                              placeholder="Search friends"
+                              className="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                              value={groupSearch}
+                              onChange={(e)=>{
+                                const val = e.target.value
+                                setGroupSearch(val)
+                                const q = val.toLowerCase()
+                                const filtered = friends.filter((f)=> f.friendusername.toLowerCase().includes(q) && !f.friendusername.toLowerCase().includes('ai'))
+                                setGroupFilteredFriends(filtered)
+                              }}
+                            />
+                          </div>
+                          <div className="max-h-56 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {(groupSearch ? groupFilteredFriends : friends).filter(f=> !f.friendusername.toLowerCase().includes('ai')).map((f)=> (
+                              <button type="button" key={f.friendid} onClick={()=>{
+                                setSelectedInviteeIds((prev)=> prev.includes(f.friendid) ? prev.filter(id=> id!==f.friendid) : [...prev, f.friendid])
+                              }} className={`flex items-center justify-between p-2 rounded-lg border text-left ${selectedInviteeIds.includes(f.friendid) ? 'bg-purple-50 border-purple-300' : 'hover:bg-purple-50'}`}>
+                                <span className="text-sm text-gray-700">{f.friendusername}</span>
+                                {selectedInviteeIds.includes(f.friendid) && <span className="text-xs bg-purple-600 text-white px-2 py-0.5 rounded-full">Selected</span>}
+                              </button>
+                            ))}
+                            {((groupSearch ? groupFilteredFriends : friends).filter(f=> !f.friendusername.toLowerCase().includes('ai')).length === 0) && (
+                              <div className="col-span-2 text-center text-sm text-gray-500 py-6">No friends found</div>
+                            )}
+                          </div>
+                          {groupSubmitAttempted && selectedInviteeIds.length === 0 && (
+                            <p className="mt-1 text-xs text-red-500">Select at least one friend to invite.</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="p-5 border-t bg-gray-50 flex items-center justify-end space-x-2">
+                        <button className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100" onClick={()=> setShowCreateGroup(false)}>Cancel</button>
+                        <button className="px-4 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700" onClick={async ()=>{
+                          setGroupSubmitAttempted(true)
+                          if(!newGroupName.trim() || selectedInviteeIds.length === 0) return;
+                          const res = await fetch('/api/groups/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:newGroupName})})
+                          const data = await res.json()
+                          if(data?.success){
+                            setGroups((g)=> [data.data.group, ...g])
+                            // send invites
+                            await Promise.all(selectedInviteeIds.map((uid)=> fetch('/api/groups/invite',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({groupId: data.data.group._id, inviteeId: uid})})))
+                            // Optionally show a toast here if available
+                            setNewGroupName("")
+                            setSelectedInviteeIds([])
+                            setGroupSubmitAttempted(false)
+                            setGroupSearch("")
+                            setGroupFilteredFriends([])
+                            setShowCreateGroup(false)
+                          } else {
+                            if (data?.statusCode === 409 || (data?.message || '').toLowerCase().includes('exists')) {
+                              setGroupNameServerError(data?.message || 'Group name already exists. Choose another name.')
+                            } else {
+                              alert(data?.message || 'Failed to create group')
+                            }
+                          }
+                        }}>Create</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
           <div className="w-2/3 flex flex-col">
             {activeChat ? (
