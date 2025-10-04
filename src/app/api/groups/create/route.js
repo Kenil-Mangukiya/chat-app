@@ -3,6 +3,7 @@ import groupModel from "@/model/group-model"
 import { response } from "@/util/response"
 import { getServerSession } from "next-auth"
 import { authOption as authOptions } from "../../auth/[...nextauth]/option"
+import { emitToUser } from "@/lib/socket-server"
 
 export async function POST(req) {
   await connectDb()
@@ -22,6 +23,9 @@ export async function POST(req) {
         { userId: session.user._id, role: "owner" },
       ],
     })
+    // Emit group creation event to the creator
+    emitToUser(session.user._id, "group_created", group)
+    
     // Return created group
     return response(200, { group }, "Group created", true)
   } catch (e) {

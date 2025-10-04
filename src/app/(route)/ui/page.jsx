@@ -62,7 +62,7 @@ export default function WhatsAppUI() {
   const [searchValue,setSearchValue] = useState("")
   const [filteredFriends,setFilteredFriends] = useState([])
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [sortOrder, setSortOrder] = useState('none'); // 'none', 'desc', 'asc'
+  const [sortOrder, setSortOrder] = useState('name'); // 'name', 'recent', 'unread'
   const [isLoading, setIsLoading] = useState(false);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [status, setStatus] = useState("offline")
@@ -228,6 +228,54 @@ export default function WhatsAppUI() {
       }
     } catch (err) {
       console.error('Failed to send message with attachment:', err)
+    }
+  }
+
+  const sendGroupMessage = async (groupId, content) => {
+    try {
+      const response = await fetch('/api/groups/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupId, content })
+      })
+      const data = await response.json()
+      if (data.success) {
+        // Add message to local state immediately
+        setMessages(prev => [...prev, data.data.message])
+      }
+    } catch (err) {
+      console.error('Failed to send group message:', err)
+    }
+  }
+
+  const sendGroupMessageWithAttachment = async (groupId) => {
+    if (!pendingAttachment || !session?.user?._id) return
+    
+    try {
+      const attachment = await uploadFileToCloudinary(pendingAttachment.file)
+      
+      const response = await fetch('/api/groups/send-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupId, content: '', attachment })
+      })
+      const data = await response.json()
+      if (data.success) {
+        // Add message to local state immediately
+        setMessages(prev => [...prev, data.data.message])
+      }
+      
+      // Clear pending attachment and clean up object URL
+      if (pendingAttachment?.url) {
+        URL.revokeObjectURL(pendingAttachment.url)
+      }
+      setPendingAttachment(null)
+      // Clear the file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    } catch (err) {
+      console.error('Failed to send group message with attachment:', err)
     }
   }
   const [processedMessages, setProcessedMessages] = useState(new Set()) // Track processed message IDs
@@ -583,13 +631,28 @@ const FullUILoader = () => (
 
   const onSubmit = async (data) => {
     if (receiverId.current && session?.user?._id) {
-      // If there's a pending attachment, send it
-      if (pendingAttachment) {
-        await sendMessageWithAttachment();
-      }
-      // If there's text content, send it
-      if (data.content.length > 0) {
-        sendMessage(session.user._id, receiverId.current, data.content);
+      // Handle group messages
+      if (receiverId.current.startsWith('group_')) {
+        const groupId = receiverId.current.replace('group_', '');
+        
+        // If there's a pending attachment, send it
+        if (pendingAttachment) {
+          await sendGroupMessageWithAttachment(groupId);
+        }
+        // If there's text content, send it
+        if (data.content.length > 0) {
+          await sendGroupMessage(groupId, data.content);
+        }
+      } else {
+        // Handle direct messages
+        // If there's a pending attachment, send it
+        if (pendingAttachment) {
+          await sendMessageWithAttachment();
+        }
+        // If there's text content, send it
+        if (data.content.length > 0) {
+          sendMessage(session.user._id, receiverId.current, data.content);
+        }
       }
       form.reset();
       setContent("")
@@ -604,10 +667,13 @@ const FullUILoader = () => (
       // Create a unique message identifier
       const messageId = `${senderId}-${receiverId}-${content}-${Date.now()}`;
       
+      console.log("=== NEW MESSAGE DEBUG ===");
       console.log("New message received:", { content, receiverId, senderId, messageId });
       console.log("Current activeChat:", activeChat);
       console.log("Current session user:", session?.user?._id);
+      console.log("Is group message:", senderId.startsWith('group_'));
       console.log("Processed messages:", Array.from(processedMessages));
+      console.log("=========================");
 
       // Check if this message has already been processed
       if (processedMessages.has(messageId)) {
@@ -620,29 +686,50 @@ const FullUILoader = () => (
         // Mark this message as processed
         setProcessedMessages(prev => new Set([...prev, messageId]));
         
-        // If user is not actively chatting with this sender, increment the count
-        if (activeChat !== senderId) {
-          console.log("User not actively chatting with sender, incrementing count");
-          // Do NOT push chat messages into the bell notifications modal.
-          // Only increment chat icon counters below.
-          
-          // Add a small delay to ensure stable state updates
-          setTimeout(() => {
-            setNewMessageCounts(prev => {
-              const newCounts = {
-                ...prev,
-                [senderId]: (prev[senderId] || 0) + 1
-              };
-              
-              // Update total count
-              const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
-              setTotalNewMessages(total);
-              
-              return newCounts;
-            });
-          }, 50);
+        // Handle group messages differently
+        if (senderId.startsWith('group_')) {
+          // For group messages, use the group ID as the key
+          if (activeChat !== senderId) {
+            setTimeout(() => {
+              setNewMessageCounts(prev => {
+                const newCounts = {
+                  ...prev,
+                  [senderId]: (prev[senderId] || 0) + 1
+                };
+                
+                // Update total count
+                const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
+                setTotalNewMessages(total);
+                
+                return newCounts;
+              });
+            }, 50);
+          }
         } else {
-          console.log("User is actively chatting with sender, not incrementing count");
+          // Handle direct messages
+          if (activeChat !== senderId) {
+            console.log("User not actively chatting with sender, incrementing count");
+            // Do NOT push chat messages into the bell notifications modal.
+            // Only increment chat icon counters below.
+            
+            // Add a small delay to ensure stable state updates
+            setTimeout(() => {
+              setNewMessageCounts(prev => {
+                const newCounts = {
+                  ...prev,
+                  [senderId]: (prev[senderId] || 0) + 1
+                };
+                
+                // Update total count
+                const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
+                setTotalNewMessages(total);
+                
+                return newCounts;
+              });
+            }, 50);
+          } else {
+            console.log("User is actively chatting with sender, not incrementing count");
+          }
         }
       }
     };
@@ -684,7 +771,7 @@ const FullUILoader = () => (
     console.log("===========================");
   }, [newMessageCounts, totalNewMessages, processedMessages, activeChat, session?.user?._id])
 
-  const onClick = (id) => {
+  const onClick = async (id) => {
     if (id) {
       setIsLoading(true)
       setActiveChat(id);
@@ -707,25 +794,44 @@ const FullUILoader = () => (
         });
       }
       
-      socket.emit("all_messages", {
-        senderId: session?.user?._id,
-        receiverId: id,
-      });
-      socket.once("receive_messages", (msgs) => {
-         const elapsedTime = Date.now() - startTime;
-         const remainingTime = Math.max(1000 - elapsedTime, 0);
-        setTimeout(() => {
-          setMessages(msgs);
-          setIsLoading(false);
-        },remainingTime);
-    })
-    
-    // Request status for this user and reset status
-    if (receiverId.current && session) {
-      socket.emit("status", { receiverId: receiverId.current });
-      // Reset status to offline initially, will be updated by server response
-      setStatus("offline");
-    }
+      // Handle group chats differently
+      if (id.startsWith('group_')) {
+        const groupId = id.replace('group_', '');
+        // Load group messages
+        try {
+          const response = await fetch(`/api/groups/get-messages?groupId=${groupId}`)
+          const data = await response.json()
+          if (data.success) {
+            setMessages(data.data.messages || [])
+          }
+        } catch (err) {
+          console.error('Failed to load group messages:', err)
+          setMessages([])
+        }
+        setIsLoading(false);
+        setStatus("offline"); // Groups don't have online status
+      } else {
+        // Handle direct messages
+        socket.emit("all_messages", {
+          senderId: session?.user?._id,
+          receiverId: id,
+        });
+        socket.once("receive_messages", (msgs) => {
+           const elapsedTime = Date.now() - startTime;
+           const remainingTime = Math.max(1000 - elapsedTime, 0);
+          setTimeout(() => {
+            setMessages(msgs);
+            setIsLoading(false);
+          },remainingTime);
+      })
+      
+      // Request status for this user and reset status
+      if (receiverId.current && session) {
+        socket.emit("status", { receiverId: receiverId.current });
+        // Reset status to offline initially, will be updated by server response
+        setStatus("offline");
+      }
+      }
     }
   };
 
@@ -825,26 +931,6 @@ const SignOut = () => {
   toast.success("Signed out successfully")
 }
 
-const handleSortToggle = () => {
-  if (sortOrder === 'none') {
-    setSortOrder('desc');
-  } else if (sortOrder === 'desc') {
-    setSortOrder('asc');
-  } else {
-    setSortOrder('none');
-  }
-};
-
-const getSortIcon = () => {
-  switch (sortOrder) {
-    case 'desc':
-      return ArrowDown;
-    case 'asc':
-      return ArrowUp;
-    default:
-      return ArrowUpDown;
-  }
-};
 
 useEffect(() => {
   let result = []
@@ -865,9 +951,7 @@ useEffect(() => {
   const aiUsers = result.filter(friend => friend.friendusername.toLowerCase().includes('ai'));
   const regularUsers = result.filter(friend => !friend.friendusername.toLowerCase().includes('ai'));
   
-  if (sortOrder === 'desc') {
-    regularUsers.sort((a, b) => b.friendusername.localeCompare(a.friendusername));
-  } else if (sortOrder === 'asc') {
+  if (sortOrder === 'name') {
     regularUsers.sort((a, b) => a.friendusername.localeCompare(b.friendusername));
   }
   
@@ -1150,6 +1234,41 @@ useEffect(() => {
     }
   }, [session?.user?._id])
 
+  // Listen for group creation and updates
+  useEffect(() => {
+    if (!session?.user?._id) return
+    const onGroupCreated = (group) => {
+      setGroups((prev) => [group, ...prev])
+    }
+    const onGroupJoined = (group) => {
+      setGroups((prev) => [group, ...prev])
+    }
+    socket.on('group_created', onGroupCreated)
+    socket.on('group_joined', onGroupJoined)
+    return () => {
+      socket.off('group_created', onGroupCreated)
+      socket.off('group_joined', onGroupJoined)
+    }
+  }, [session?.user?._id])
+
+  // Listen for group messages
+  useEffect(() => {
+    if (!session?.user?._id) return
+    const onGroupMessage = (data) => {
+      // Only add message if it's for the current active group
+      if (activeChat === `group_${data.groupId}`) {
+        setMessages(prev => [...prev, data.message])
+      }
+      
+      // Note: Notification handling is done by handleNewMessage for new_message events
+      // This handler only manages real-time message display for active chats
+    }
+    socket.on('group_message_received', onGroupMessage)
+    return () => {
+      socket.off('group_message_received', onGroupMessage)
+    }
+  }, [session?.user?._id, activeChat])
+
   // Fetch friend requests
   const fetchFriendRequests = async () => {
     try {
@@ -1231,6 +1350,27 @@ useEffect(() => {
       console.log("Periodic friend request refresh")
       fetchFriendRequests()
     }, 10000) // Check every 10 seconds
+
+    return () => clearInterval(interval)
+  }, [session?.user?._id])
+
+  // Periodic refresh of groups (fallback for socket notifications)
+  useEffect(() => {
+    if (!session?.user?._id) return
+
+    const interval = setInterval(async () => {
+      console.log("Periodic groups refresh")
+      try {
+        const res = await fetch('/api/groups/list')
+        const data = await res.json()
+        if (data?.success) {
+          setGroups(data.data.groups || [])
+          setGroupInvites(data.data.invites || [])
+        }
+      } catch (e) {
+        console.error("Error refreshing groups:", e)
+      }
+    }, 15000) // Check every 15 seconds
 
     return () => clearInterval(interval)
   }, [session?.user?._id])
@@ -1375,12 +1515,6 @@ useEffect(() => {
                     <div className="font-medium">New Chats ({totalNewMessages})</div>
                     <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-green-500"></div>
                   </div>
-                  {/* Quick actions for attachments */}
-                  <div className="absolute top-7 left-1/2 transform -translate-x-1/2 bg-white border border-gray-200 rounded-lg shadow-md opacity-0 group-hover:opacity-100 transition-opacity p-2 flex space-x-2">
-                    <button onClick={() => openFilePicker('image/*')} className="text-xs px-2 py-1 rounded bg-blue-50 hover:bg-blue-100">Image</button>
-                    <button onClick={() => openFilePicker('video/*')} className="text-xs px-2 py-1 rounded bg-purple-50 hover:bg-purple-100">Video</button>
-                    <button onClick={() => openFilePicker('application/pdf,application/*')} className="text-xs px-2 py-1 rounded bg-gray-50 hover:bg-gray-100">Document</button>
-                  </div>
                 </div>
 
                 {/* Notification Icon with Dropdown */}
@@ -1392,9 +1526,9 @@ useEffect(() => {
                     className="p-1 hover:bg-gray-200 rounded-full transition-colors duration-200 relative"
                   >
                     <Bell size={20} className="text-gray-600 hover:text-blue-500 transition-colors duration-200" />
-                    {((notifications?.length || 0) > 0 || (friendRequests?.length || 0) > 0) && (
+                    {((notifications?.length || 0) > 0 || (friendRequests?.length || 0) > 0 || (groupInvites?.length || 0) > 0) && (
                       <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center animate-pulse">
-                        {(notifications?.length || 0) + (friendRequests?.length || 0)}
+                        {(notifications?.length || 0) + (friendRequests?.length || 0) + (groupInvites?.length || 0)}
                       </span>
                     )}
                   </button>
@@ -1421,9 +1555,9 @@ useEffect(() => {
                         <div className="flex items-center justify-between">
                           <h3 className="font-bold text-gray-800 text-lg">Notifications</h3>
                           <div className="flex items-center space-x-2">
-                            {(((friendRequests?.length || 0) + (notifications?.length || 0)) > 0) && (
+                            {(((friendRequests?.length || 0) + (notifications?.length || 0) + (groupInvites?.length || 0)) > 0) && (
                               <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full font-medium">
-                                {(friendRequests?.length || 0) + (notifications?.length || 0)}
+                                {(friendRequests?.length || 0) + (notifications?.length || 0) + (groupInvites?.length || 0)}
                               </span>
                             )}
                             <button
@@ -1458,6 +1592,12 @@ useEffect(() => {
                                       const d = await res.json();
                                       if(d?.success){
                                         setGroupInvites((arr)=> arr.filter((x)=> x._id !== gi._id))
+                                        // Refresh groups list
+                                        const groupsRes = await fetch('/api/groups/list')
+                                        const groupsData = await groupsRes.json()
+                                        if (groupsData?.success) {
+                                          setGroups(groupsData.data.groups || [])
+                                        }
                                       }
                                     }}>Accept</button>
                                     <button className="px-3 py-1 rounded-lg bg-gray-200 text-gray-700 text-xs" onClick={async ()=>{
@@ -1596,20 +1736,18 @@ useEffect(() => {
 
                 {/* Sort Icon with Tooltip */}
                 <div className="relative group">
-                  {(() => {
-                    const SortIcon = getSortIcon();
-                    return (
-                      <SortIcon 
-                        size={20} 
-                        className="text-gray-600 cursor-pointer hover:text-orange-500 transition-colors duration-200" 
-                        onClick={handleSortToggle}
-                      />
-                    );
-                  })()}
+                  <button
+                    onClick={() => {
+                      const nextSort = sortOrder === 'name' ? 'recent' : sortOrder === 'recent' ? 'unread' : 'name';
+                      setSortOrder(nextSort);
+                    }}
+                    className="p-1 hover:bg-gray-200 rounded-full transition-colors duration-200"
+                    title={`Sort by ${sortOrder === 'name' ? 'Recent' : sortOrder === 'recent' ? 'Unread' : 'Name'}`}
+                  >
+                    <ArrowUpDown size={20} className="text-gray-600 hover:text-orange-500 transition-colors duration-200" />
+                  </button>
                   <div className="absolute -top-7 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-orange-500 to-red-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                    <div className="font-medium">
-                      {sortOrder === 'none' ? 'Sort Friends' : sortOrder === 'desc' ? 'Descending' : 'Ascending'}
-                    </div>
+                    <div className="font-medium">Sort by {sortOrder === 'name' ? 'Recent' : sortOrder === 'recent' ? 'Unread' : 'Name'}</div>
                     <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-orange-500"></div>
                   </div>
                 </div>
@@ -1629,18 +1767,72 @@ useEffect(() => {
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              {filteredFriends.map(chat => {
-                const isAI = chat.friendusername.toLowerCase().includes('ai');
-                return (
+              {/* Combined Chat List */}
+              {(() => {
+                // Create combined list with proper sorting
+                const combinedList = [
+                  // AI friends first
+                  ...filteredFriends.filter(chat => chat.friendusername.toLowerCase().includes('ai')).map(chat => ({
+                    ...chat,
+                    type: 'friend',
+                    displayName: chat.friendusername,
+                    id: chat.friendid,
+                    isAI: true
+                  })),
+                  // Groups after AI friends
+                  ...groups.map(group => ({
+                    ...group,
+                    type: 'group',
+                    displayName: group.name,
+                    id: `group_${group._id}`,
+                    isAI: false
+                  })),
+                  // Regular friends last
+                  ...filteredFriends.filter(chat => !chat.friendusername.toLowerCase().includes('ai')).map(chat => ({
+                    ...chat,
+                    type: 'friend',
+                    displayName: chat.friendusername,
+                    id: chat.friendid,
+                    isAI: false
+                  }))
+                ];
+
+                // Apply sorting while keeping AI friends at the top
+                const sortedList = combinedList.sort((a, b) => {
+                  // AI friends always stay at the top
+                  if (a.isAI && !b.isAI) return -1;
+                  if (!a.isAI && b.isAI) return 1;
+                  if (a.isAI && b.isAI) return 0; // AI friends maintain their order
+                  
+                  // For non-AI items, apply sorting
+                  switch (sortOrder) {
+                    case 'name':
+                      return a.displayName.localeCompare(b.displayName);
+                    case 'recent':
+                      return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+                    case 'unread':
+                      const aUnread = newMessageCounts[a.id] || 0;
+                      const bUnread = newMessageCounts[b.id] || 0;
+                      return bUnread - aUnread;
+                    default:
+                      return 0;
+                  }
+                });
+
+                return sortedList.map(item => (
                   <div
-                    key={chat._id}
+                    key={item.id}
                     className={`flex items-center px-3 py-3 hover:bg-gray-100 cursor-pointer border-b border-gray-200 transition-all duration-200 ${
-                      activeChat === chat.friendid ? 'bg-gray-200' : ''
-                    } ${isAI ? 'bg-gradient-to-r from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100' : ''}`}
-                    onClick={() => onClick(chat.friendid)}
+                      activeChat === item.id ? 'bg-gray-200' : ''
+                    } ${item.isAI ? 'bg-gradient-to-r from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100' : ''}`}
+                    onClick={() => onClick(item.id)}
                   >
                     <div className="flex items-center mr-3">
-                      {isAI ? (
+                      {item.type === 'group' ? (
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-r from-green-500 to-blue-600 flex items-center justify-center shadow-md">
+                          <Users size={20} className="text-white" />
+                        </div>
+                      ) : item.isAI ? (
                         <div className="w-10 h-10 rounded-full bg-gradient-to-r from-indigo-500 to-purple-600 flex items-center justify-center shadow-md">
                           <Bot size={20} className="text-white" />
                         </div>
@@ -1653,20 +1845,20 @@ useEffect(() => {
                     <div className="flex-1">
                       <div className="flex justify-between items-center">
                         <h3 className={`font-semibold text-sm ${
-                          isAI ? 'text-indigo-700' : 'text-gray-800'
+                          item.isAI ? 'text-indigo-700' : 'text-gray-800'
                         }`}>
-                          {chat.friendusername}
+                          {item.displayName}
                         </h3>
-                        {newMessageCounts[chat.friendid] > 0 && (
+                        {newMessageCounts[item.id] > 0 && (
                           <div className="bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-bold shadow-md">
-                            {newMessageCounts[chat.friendid]}
+                            {newMessageCounts[item.id]}
                           </div>
                         )}
                       </div>
                     </div>
                   </div>
-                );
-              })}
+                ));
+              })()}
             </div>
 
             <div className="border-t border-gray-300 p-3 bg-gray-200">
@@ -1866,9 +2058,22 @@ useEffect(() => {
                       </div>
                      <div>
   <h3 className="font-semibold text-sm text-gray-800">
-    {friends.find(f => f.friendid === receiverId.current)?.friendusername || 'Friend'}
+    {receiverId.current?.startsWith('group_') 
+      ? groups.find(g => g._id === receiverId.current.replace('group_', ''))?.name || 'Group'
+      : friends.find(f => f.friendid === receiverId.current)?.friendusername || 'Friend'
+    }
   </h3>
   {(() => {
+    // Handle group chats - no status display
+    if (receiverId.current?.startsWith('group_')) {
+      return (
+        <div className="flex items-center">
+          <div className="w-2 h-2 bg-blue-500 rounded-full mr-1"></div>
+          <span className="text-xs text-blue-600">Group Chat</span>
+        </div>
+      );
+    }
+    
     const isAI = friends.find(f => f.friendid === receiverId.current)?.friendusername.toLowerCase().includes('ai');
     const currentFriendId = receiverId.current;
     const friendStatus = userStatus[currentFriendId] || status;

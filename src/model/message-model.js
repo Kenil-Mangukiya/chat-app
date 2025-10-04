@@ -13,6 +13,11 @@ const messageSchema = new mongoose.Schema(
         receiverid : {
             type : mongoose.Schema.Types.ObjectId,
             ref : "user"
+        },
+        type: {
+            type: String,
+            enum: ["direct", "group"],
+            default: "direct"
         }, 
         content : {
             type : String,

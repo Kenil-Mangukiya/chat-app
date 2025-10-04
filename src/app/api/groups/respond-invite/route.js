@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth"
 import { authOption as authOptions } from "../../auth/[...nextauth]/option"
 import groupModel from "@/model/group-model"
 import groupInviteModel from "@/model/group-invite-model"
+import { emitToUser } from "@/lib/socket-server"
 
 export async function POST(req) {
   await connectDb()
@@ -20,9 +21,13 @@ export async function POST(req) {
   if (action === "accept") {
     invite.status = "accepted"
     await invite.save()
-    await groupModel.findByIdAndUpdate(invite.groupId, {
+    const updatedGroup = await groupModel.findByIdAndUpdate(invite.groupId, {
       $addToSet: { members: { userId: invite.inviteeId, role: "member" } },
-    })
+    }, { new: true })
+    
+    // Emit group joined event to the user who accepted
+    emitToUser(invite.inviteeId, "group_joined", updatedGroup)
+    
     return response(200, {}, "Invite accepted", true)
   }
 

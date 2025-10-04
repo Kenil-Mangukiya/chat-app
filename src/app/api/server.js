@@ -32,16 +32,24 @@ app.prepare().then(async () => {
     },
   });
 
+  // Export the socket instance for use in other modules
+  global.socketInstance = io;
+
   // Set the socket instance and immediately drain any queued notifications
   setSocketInstance(io);
-  try {
-    const drained = processNotificationQueue();
-    if (drained) {
-      console.log("Queued notifications processed after socket init");
+  console.log("Socket instance set, processing any queued notifications...");
+  
+  // Process queued notifications after a short delay to ensure everything is ready
+  setTimeout(() => {
+    try {
+      const drained = processNotificationQueue();
+      if (drained) {
+        console.log("Queued notifications processed after socket init");
+      }
+    } catch (e) {
+      console.log("Error processing queued notifications:", e);
     }
-  } catch (e) {
-    console.log("Error processing queued notifications:", e);
-  }
+  }, 100);
 
 
   const callDataCache = new Map();

@@ -20,6 +20,11 @@ const conversationSchema = new mongoose.Schema({
     clearedFor: {
         type: mongoose.Schema.Types.Mixed,
         default: {}
+    },
+    type: {
+        type: String,
+        enum: ["direct", "group"],
+        default: "direct"
     }
 },{timestamps : true})
 
