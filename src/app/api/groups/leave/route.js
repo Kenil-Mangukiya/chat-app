@@ -1,8 +1,12 @@
 import { connectDb } from "@/db/connect-db"
-import { response } from "@/util/response"
 import { getServerSession } from "next-auth"
 import { authOption as authOptions } from "../../auth/[...nextauth]/option"
+import { response } from "@/util/response"
 import groupModel from "@/model/group-model"
+import conversationModel from "@/model/conversation-model"
+import messageModel from "@/model/message-model"
+import notificationModel from "@/model/notification-model"
+import { emitToUser } from "@/lib/socket-server"
 
 export async function POST(req) {
   await connectDb()
@@ -10,27 +14,60 @@ export async function POST(req) {
   if (!session) return response(403, {}, "Not authorized", false)
 
   const { groupId } = await req.json()
-  const group = await groupModel.findById(groupId)
-  if (!group) return response(404, {}, "Group not found", false)
+  if (!groupId) return response(400, {}, "groupId required", false)
 
-  // Owner leaving transfers or blocks
-  const isOwner = group.ownerId.toString() === session.user._id
-  if (isOwner && group.members.length > 1) {
-    // Promote the oldest admin/member to owner
-    const nextOwner = group.members.find((m) => m.userId.toString() !== session.user._id)
-    if (!nextOwner) return response(400, {}, "No member to transfer ownership", false)
-    group.ownerId = nextOwner.userId
-    group.members = group.members
-      .filter((m) => m.userId.toString() !== session.user._id)
-      .map((m) => (m.userId.toString() === nextOwner.userId.toString() ? { ...m.toObject(), role: "owner" } : m))
+  try {
+    // Find the group
+    const group = await groupModel.findById(groupId)
+    if (!group) return response(404, {}, "Group not found", false)
+    
+    // Check if user is a member
+    const memberIndex = group.members.findIndex(member => member.userId.toString() === session.user._id)
+    if (memberIndex === -1) {
+      return response(403, {}, "You are not a member of this group", false)
+    }
+
+    // Get member info before removing
+    const memberName = session.user.username || "Member"
+    const groupName = group.name
+
+    // Remove the member from the group
+    group.members.splice(memberIndex, 1)
     await group.save()
-    return response(200, {}, "Ownership transferred and left group", true)
+
+    // Create notification for remaining members about the leave
+    const remainingMembers = group.members.map(member => member.userId.toString())
+    const notifications = remainingMembers.map(memberId => ({
+      userId: memberId,
+      type: "group_member_left",
+      title: "Member Left Group",
+      message: `${memberName} left the group "${groupName}"`,
+      data: {
+        groupId: groupId,
+        groupName: groupName,
+        leftBy: memberName,
+        leftById: session.user._id
+      },
+      groupId: groupId,
+      senderId: session.user._id
+    }))
+
+    if (notifications.length > 0) {
+      await notificationModel.insertMany(notifications)
+    }
+
+    // Emit realtime event to remaining members so active chats can show system message
+    remainingMembers.forEach(uid => {
+      emitToUser(uid, "group_member_left", {
+        groupId,
+        userId: session.user._id,
+        username: memberName
+      })
+    })
+
+    return response(200, {}, "Left group successfully", true)
+  } catch (e) {
+    console.error('Error leaving group:', e)
+    return response(500, {}, e.message, false)
   }
-
-  // If single member owner, deleting group is better handled by delete endpoint
-  group.members = group.members.filter((m) => m.userId.toString() !== session.user._id)
-  await group.save()
-  return response(200, {}, "Left group", true)
 }
-
-

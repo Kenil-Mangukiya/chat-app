@@ -3,7 +3,6 @@ import { response } from "@/util/response"
 import { getServerSession } from "next-auth"
 import { authOption as authOptions } from "../../auth/[...nextauth]/option"
 import groupModel from "@/model/group-model"
-import groupInviteModel from "@/model/group-invite-model"
 
 export async function GET() {
   await connectDb()
@@ -14,11 +13,7 @@ export async function GET() {
     .find({ "members.userId": session.user._id })
     .sort({ updatedAt: -1 })
 
-  const invites = await groupInviteModel
-    .find({ inviteeId: session.user._id, status: "pending" })
-    .populate("groupId", "name")
-
-  return response(200, { groups, invites }, "Groups fetched", true)
+  return response(200, { groups }, "Groups fetched", true)
 }
 
 

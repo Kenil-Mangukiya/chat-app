@@ -289,13 +289,137 @@ export default function WhatsAppUI() {
   const [friendRequests, setFriendRequests] = useState([]) // Friend requests
   const [showCreateGroup, setShowCreateGroup] = useState(false)
   const [groups, setGroups] = useState([])
-  const [groupInvites, setGroupInvites] = useState([])
   const [newGroupName, setNewGroupName] = useState("")
   const [selectedInviteeIds, setSelectedInviteeIds] = useState([])
   const [groupSubmitAttempted, setGroupSubmitAttempted] = useState(false)
   const [groupSearch, setGroupSearch] = useState("")
   const [groupFilteredFriends, setGroupFilteredFriends] = useState([])
   const [groupNameServerError, setGroupNameServerError] = useState("")
+  const [isMuted, setIsMuted] = useState(false) // Mute notifications state
+  const [showDeleteGroupModal, setShowDeleteGroupModal] = useState(false)
+  const [showLeaveGroupModal, setShowLeaveGroupModal] = useState(false)
+  const [showGroupMembersModal, setShowGroupMembersModal] = useState(false)
+
+  // Helper function to deduplicate groups
+  const deduplicateGroups = (groups) => {
+    const seen = new Set()
+    return groups.filter(group => {
+      if (seen.has(group._id)) {
+        return false
+      }
+      seen.add(group._id)
+      return true
+    })
+  }
+
+  // Function to mark notification as read
+  const markNotificationAsRead = async (notificationId) => {
+    try {
+      await fetch('/api/notifications', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notificationId })
+      })
+    } catch (e) {
+      console.error('Error marking notification as read:', e)
+    }
+  }
+
+  // Function to delete notification from database
+  const deleteNotification = async (notificationId) => {
+    try {
+      await fetch('/api/notifications', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notificationId })
+      })
+    } catch (e) {
+      console.error('Error deleting notification:', e)
+    }
+  }
+
+  // Function to toggle mute notifications
+  const toggleMuteNotifications = () => {
+    setIsMuted(!isMuted)
+    // Store mute state in localStorage
+    const muteKey = `muted_${receiverId.current}`
+    localStorage.setItem(muteKey, (!isMuted).toString())
+  }
+
+  // Function to show delete group modal
+  const showDeleteGroupConfirmation = () => {
+    setShowDeleteGroupModal(true)
+  }
+
+  // Function to show leave group confirmation modal
+  const showLeaveGroupConfirmation = () => {
+    setShowLeaveGroupModal(true)
+  }
+
+  // Function to show group members modal
+  const showGroupMembers = () => {
+    setShowGroupMembersModal(true)
+  }
+
+  // Function to confirm delete group
+  const confirmDeleteGroup = async () => {
+    if (!receiverId.current?.startsWith('group_')) return
+    
+    const groupId = receiverId.current.replace('group_', '')
+    
+    try {
+      const res = await fetch('/api/groups/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupId })
+      })
+      const data = await res.json()
+      
+      if (data.success) {
+        setShowDeleteGroupModal(false)
+        // Navigate back to main screen
+        receiverId.current = null
+        setMessages([])
+        // Toast after state updates to avoid race with unmounting
+        setTimeout(() => toast.success("Group deleted successfully"), 0)
+      } else {
+        toast.error(data.message || "Failed to delete group")
+      }
+    } catch (e) {
+      console.error('Error deleting group:', e)
+      toast.error("Failed to delete group")
+    }
+  }
+
+  // Function to confirm leave group
+  const confirmLeaveGroup = async () => {
+    if (!receiverId.current?.startsWith('group_')) return
+    
+    const groupId = receiverId.current.replace('group_', '')
+    
+    try {
+      const res = await fetch('/api/groups/leave', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupId })
+      })
+      const data = await res.json()
+      
+      if (data.success) {
+        setShowLeaveGroupModal(false)
+        // Navigate back to main screen
+        receiverId.current = null
+        setMessages([])
+        // Toast after UI state updates
+        setTimeout(() => toast.success("Left group successfully"), 0)
+      } else {
+        toast.error(data.message || "Failed to leave group")
+      }
+    } catch (e) {
+      console.error('Error leaving group:', e)
+      toast.error("Failed to leave group")
+    }
+  }
   const notificationRef = useRef(null)
 
   
@@ -678,6 +802,16 @@ const FullUILoader = () => (
       // Check if this message has already been processed
       if (processedMessages.has(messageId)) {
         console.log("Message already processed, skipping...");
+        return;
+      }
+
+      // Check if notifications are muted for this chat
+      const chatId = senderId.startsWith('group_') ? senderId : receiverId;
+      const muteKey = `muted_${chatId}`;
+      const isMuted = localStorage.getItem(muteKey) === 'true';
+      
+      if (isMuted) {
+        console.log("Notifications are muted for this chat, skipping notification");
         return;
       }
 
@@ -1206,31 +1340,107 @@ useEffect(() => {
     }
   }, [])
 
-  // Load groups and invites once session is ready
+  // Load groups and notifications once session is ready
   useEffect(() => {
     const loadGroups = async () => {
       try {
         const res = await fetch('/api/groups/list')
         const data = await res.json()
         if (data?.success) {
-          setGroups(data.data.groups || [])
-          setGroupInvites(data.data.invites || [])
+          setGroups(deduplicateGroups(data.data.groups || []))
         }
       } catch (e) {}
     }
-    if (session?.user?._id) loadGroups()
+    
+    const loadNotifications = async () => {
+      try {
+        const res = await fetch('/api/notifications')
+        const data = await res.json()
+        if (data?.success) {
+          // Convert database notifications to UI format
+          const dbNotifications = data.data.notifications.map(notif => ({
+            id: notif._id,
+            type: notif.type,
+            title: notif.title,
+            message: notif.message,
+            timestamp: new Date(notif.createdAt).getTime(),
+            isRead: notif.isRead,
+            data: notif.data
+          }))
+          setNotifications(prev => {
+            // Merge with existing notifications and deduplicate
+            const combined = [...dbNotifications, ...(prev || [])]
+            const seen = new Set()
+            return combined.filter(notif => {
+              if (seen.has(notif.id)) return false
+              seen.add(notif.id)
+              return true
+            }).slice(0, 50)
+          })
+        }
+      } catch (e) {
+        console.error('Error loading notifications:', e)
+      }
+    }
+    
+    if (session?.user?._id) {
+      loadGroups()
+      loadNotifications()
+    }
   }, [session?.user?._id])
 
-  // Listen for real-time group invites
+  // Load mute state when chat changes
+  useEffect(() => {
+    if (receiverId.current) {
+      const muteKey = `muted_${receiverId.current}`
+      const muted = localStorage.getItem(muteKey) === 'true'
+      setIsMuted(muted)
+    }
+  }, [receiverId.current])
+
+  // Listen for real-time group additions
   useEffect(() => {
     if (!session?.user?._id) return
-    const onInvite = (invite) => {
-      setGroupInvites((prev) => [invite, ...prev])
-      setShowNotifications(true)
+    const onGroupAdded = (data) => {
+      // Add the group to the groups list if it's not already there
+      setGroups((prev) => {
+        const newGroups = [data.group, ...prev]
+        return deduplicateGroups(newGroups)
+      })
+      
+      // Refresh notifications from database to get the real notification
+      setTimeout(async () => {
+        try {
+          const res = await fetch('/api/notifications')
+          const data = await res.json()
+          if (data?.success) {
+            const dbNotifications = data.data.notifications.map(notif => ({
+              id: notif._id,
+              type: notif.type,
+              title: notif.title,
+              message: notif.message,
+              timestamp: new Date(notif.createdAt).getTime(),
+              isRead: notif.isRead,
+              data: notif.data
+            }))
+            setNotifications(prev => {
+              const combined = [...dbNotifications, ...(prev || [])]
+              const seen = new Set()
+              return combined.filter(notif => {
+                if (seen.has(notif.id)) return false
+                seen.add(notif.id)
+                return true
+              }).slice(0, 50)
+            })
+          }
+        } catch (e) {
+          console.error('Error refreshing notifications:', e)
+        }
+      }, 1000)
     }
-    socket.on('group_invite_received', onInvite)
+    socket.on('group_added', onGroupAdded)
     return () => {
-      socket.off('group_invite_received', onInvite)
+      socket.off('group_added', onGroupAdded)
     }
   }, [session?.user?._id])
 
@@ -1238,16 +1448,93 @@ useEffect(() => {
   useEffect(() => {
     if (!session?.user?._id) return
     const onGroupCreated = (group) => {
-      setGroups((prev) => [group, ...prev])
+      setGroups((prev) => {
+        const newGroups = [group, ...prev]
+        return deduplicateGroups(newGroups)
+      })
     }
     const onGroupJoined = (group) => {
-      setGroups((prev) => [group, ...prev])
+      setGroups((prev) => {
+        const newGroups = [group, ...prev]
+        return deduplicateGroups(newGroups)
+      })
+    }
+    const onGroupDeleted = (payload) => {
+      const groupId = typeof payload === 'string' ? payload : payload?.groupId
+      const deletedBy = typeof payload === 'object' ? payload?.deletedBy : undefined
+      setGroups(prev => prev.filter(g => g._id !== groupId))
+      // If we're currently in the deleted group, navigate away
+      if (receiverId.current === `group_${groupId}`) {
+        receiverId.current = null
+        setMessages([])
+      }
+      // Add a notification entry locally so users see it immediately
+      setNotifications(prev => {
+        const item = {
+          id: `group_deleted_${groupId}_${Date.now()}`,
+          type: 'group_deleted',
+          title: 'Group Deleted',
+          message: deletedBy ? `${deletedBy} deleted this group` : 'This group was deleted by the owner',
+          timestamp: Date.now(),
+          isRead: false,
+          data: { groupId }
+        }
+        const next = [item, ...(prev || [])]
+        saveGlobalNotifications(next)
+        return next.slice(0, 50)
+      })
+    }
+    const onGroupLeft = (data) => {
+      // Show leave notification in group chat
+      if (receiverId.current === `group_${data.groupId}`) {
+        const leaveMessage = {
+          id: `leave_${data.userId}_${Date.now()}`,
+          content: `${data.username} left the group`,
+          senderId: 'system',
+          receiverId: `group_${data.groupId}`,
+          timestamp: Date.now(),
+          type: 'system',
+          isSystemMessage: true
+        }
+        setMessages(prev => [...prev, leaveMessage])
+      }
+      // Refresh notifications from DB to avoid duplicate local + DB entries
+      ;(async () => {
+        try {
+          const res = await fetch('/api/notifications')
+          const json = await res.json()
+          if (json?.success) {
+            const dbNotifications = json.data.notifications.map(notif => ({
+              id: notif._id,
+              type: notif.type,
+              title: notif.title,
+              message: notif.message,
+              timestamp: new Date(notif.createdAt).getTime(),
+              isRead: notif.isRead,
+              data: notif.data
+            }))
+            setNotifications(prev => {
+              const combined = [...dbNotifications, ...(prev || [])]
+              const seen = new Set()
+              return combined.filter(n => {
+                if (seen.has(n.id)) return false
+                seen.add(n.id)
+                return true
+              }).slice(0, 50)
+            })
+          }
+        } catch {}
+      })()
     }
     socket.on('group_created', onGroupCreated)
     socket.on('group_joined', onGroupJoined)
+    socket.on('group_deleted', onGroupDeleted)
+    socket.on('group_member_left', onGroupLeft)
     return () => {
       socket.off('group_created', onGroupCreated)
       socket.off('group_joined', onGroupJoined)
+      socket.off('group_deleted', onGroupDeleted)
+      socket.off('group_member_left', onGroupLeft)
     }
   }, [session?.user?._id])
 
@@ -1359,16 +1646,40 @@ useEffect(() => {
     if (!session?.user?._id) return
 
     const interval = setInterval(async () => {
-      console.log("Periodic groups refresh")
+      console.log("Periodic groups and notifications refresh")
       try {
-        const res = await fetch('/api/groups/list')
-        const data = await res.json()
-        if (data?.success) {
-          setGroups(data.data.groups || [])
-          setGroupInvites(data.data.invites || [])
+        // Refresh groups
+        const groupsRes = await fetch('/api/groups/list')
+        const groupsData = await groupsRes.json()
+        if (groupsData?.success) {
+          setGroups(deduplicateGroups(groupsData.data.groups || []))
+        }
+        
+        // Refresh notifications
+        const notifRes = await fetch('/api/notifications')
+        const notifData = await notifRes.json()
+        if (notifData?.success) {
+          const dbNotifications = notifData.data.notifications.map(notif => ({
+            id: notif._id,
+            type: notif.type,
+            title: notif.title,
+            message: notif.message,
+            timestamp: new Date(notif.createdAt).getTime(),
+            isRead: notif.isRead,
+            data: notif.data
+          }))
+          setNotifications(prev => {
+            const combined = [...dbNotifications, ...(prev || [])]
+            const seen = new Set()
+            return combined.filter(notif => {
+              if (seen.has(notif.id)) return false
+              seen.add(notif.id)
+              return true
+            }).slice(0, 50)
+          })
         }
       } catch (e) {
-        console.error("Error refreshing groups:", e)
+        console.error("Error refreshing groups and notifications:", e)
       }
     }, 15000) // Check every 15 seconds
 
@@ -1526,9 +1837,9 @@ useEffect(() => {
                     className="p-1 hover:bg-gray-200 rounded-full transition-colors duration-200 relative"
                   >
                     <Bell size={20} className="text-gray-600 hover:text-blue-500 transition-colors duration-200" />
-                    {((notifications?.length || 0) > 0 || (friendRequests?.length || 0) > 0 || (groupInvites?.length || 0) > 0) && (
+                    {((notifications?.length || 0) > 0 || (friendRequests?.length || 0) > 0) && (
                       <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center animate-pulse">
-                        {(notifications?.length || 0) + (friendRequests?.length || 0) + (groupInvites?.length || 0)}
+                        {(notifications?.length || 0) + (friendRequests?.length || 0)}
                       </span>
                     )}
                   </button>
@@ -1555,9 +1866,9 @@ useEffect(() => {
                         <div className="flex items-center justify-between">
                           <h3 className="font-bold text-gray-800 text-lg">Notifications</h3>
                           <div className="flex items-center space-x-2">
-                            {(((friendRequests?.length || 0) + (notifications?.length || 0) + (groupInvites?.length || 0)) > 0) && (
+                            {(((friendRequests?.length || 0) + (notifications?.length || 0)) > 0) && (
                               <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full font-medium">
-                                {(friendRequests?.length || 0) + (notifications?.length || 0) + (groupInvites?.length || 0)}
+                                {(friendRequests?.length || 0) + (notifications?.length || 0)}
                               </span>
                             )}
                             <button
@@ -1572,47 +1883,6 @@ useEffect(() => {
                       </div>
                       
                       <div className="p-4">
-                        {/* Group Invites */}
-                        {(groupInvites?.length || 0) > 0 && (
-                          <div className="mb-6">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center">
-                              <Users className="w-4 h-4 mr-2 text-purple-500" />
-                              Group Invites
-                            </h4>
-                            <div className="space-y-3">
-                              {groupInvites.map((gi)=> (
-                                <div key={gi._id} className="p-3 rounded-lg border flex items-center justify-between">
-                                  <div>
-                                    <div className="text-sm font-medium text-gray-800">{gi.groupId?.name || 'Group'}</div>
-                                    <div className="text-xs text-gray-500">Invitation</div>
-                                  </div>
-                                  <div className="flex items-center space-x-2">
-                                    <button className="px-3 py-1 rounded-lg bg-green-600 text-white text-xs" onClick={async ()=>{
-                                      const res = await fetch('/api/groups/respond-invite',{method:'POST', body: JSON.stringify({inviteId: gi._id, action: 'accept'})})
-                                      const d = await res.json();
-                                      if(d?.success){
-                                        setGroupInvites((arr)=> arr.filter((x)=> x._id !== gi._id))
-                                        // Refresh groups list
-                                        const groupsRes = await fetch('/api/groups/list')
-                                        const groupsData = await groupsRes.json()
-                                        if (groupsData?.success) {
-                                          setGroups(groupsData.data.groups || [])
-                                        }
-                                      }
-                                    }}>Accept</button>
-                                    <button className="px-3 py-1 rounded-lg bg-gray-200 text-gray-700 text-xs" onClick={async ()=>{
-                                      const res = await fetch('/api/groups/respond-invite',{method:'POST', body: JSON.stringify({inviteId: gi._id, action: 'decline'})})
-                                      const d = await res.json();
-                                      if(d?.success){
-                                        setGroupInvites((arr)=> arr.filter((x)=> x._id !== gi._id))
-                                      }
-                                    }}>Decline</button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
                         {/* Updates (responses) Section */}
                         {(notifications?.length || 0) > 0 && (
                           <div className="mb-6">
@@ -1622,21 +1892,60 @@ useEffect(() => {
                             </h4>
                             <div className="space-y-3">
                               {notifications.map((n) => (
-                                <div key={n.id} className="group p-4 bg-white rounded-xl border border-gray-200 hover:shadow-md transition-all duration-200 relative">
+                                <div 
+                                  key={n.id} 
+                                  className={`group p-4 rounded-xl border hover:shadow-md transition-all duration-200 relative cursor-pointer ${
+                                    n.type === 'group_added' 
+                                      ? 'bg-gradient-to-r from-purple-50 to-pink-50 border-purple-200' 
+                                      : 'bg-white border-gray-200'
+                                  } ${!n.isRead ? 'ring-2 ring-blue-200' : ''}`}
+                                  onClick={() => {
+                                    if (!n.isRead) {
+                                      markNotificationAsRead(n.id)
+                                      setNotifications(prev => 
+                                        prev.map(notif => 
+                                          notif.id === n.id ? { ...notif, isRead: true } : notif
+                                        )
+                                      )
+                                    }
+                                    // If it's a group addition notification, you could navigate to the group
+                                    if (n.type === 'group_added' && n.data?.groupId) {
+                                      // You could add navigation logic here if needed
+                                    }
+                                  }}
+                                >
                                   <button
                                     aria-label="Dismiss notification"
-                                    onClick={() => setNotifications(prev => { const next=(prev||[]).filter(x=>x.id!==n.id); saveGlobalNotifications(next); return next; })}
+                                    onClick={async (e) => {
+                                      e.stopPropagation()
+                                      // Delete from database if it's a database notification
+                                      if (n.id && !n.id.startsWith('group_added_')) {
+                                        await deleteNotification(n.id)
+                                      }
+                                      // Remove from UI
+                                      setNotifications(prev => { 
+                                        const next=(prev||[]).filter(x=>x.id!==n.id); 
+                                        saveGlobalNotifications(next); 
+                                        return next; 
+                                      })
+                                    }}
                                     className="absolute top-3 right-3 text-gray-400 hover:text-gray-600"
                                   >
                                     ×
                                   </button>
                                   <div className="flex items-start space-x-3">
-                                    <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center shadow">
-                                      <span className="text-white text-sm font-bold">!
+                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center shadow ${
+                                      n.type === 'group_added' 
+                                        ? 'bg-gradient-to-br from-purple-500 to-pink-600' 
+                                        : 'bg-gradient-to-br from-indigo-500 to-purple-600'
+                                    }`}>
+                                      <span className="text-white text-sm font-bold">
+                                        {n.type === 'group_added' ? '👥' : '!'}
                                       </span>
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                      <p className="text-sm text-gray-800">{n.message}</p>
+                                      <p className="text-sm font-medium text-gray-800">{n.title}</p>
+                                      <p className="text-sm text-gray-600 mt-1">{n.message}</p>
                                       <p className="text-xs text-gray-500 mt-1">{new Date(n.timestamp).toLocaleString?.() || new Date(n.timestamp).toLocaleString?.call(new Date(n.timestamp)) || ''}</p>
                                     </div>
                                   </div>
@@ -2009,7 +2318,10 @@ useEffect(() => {
                           const res = await fetch('/api/groups/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:newGroupName})})
                           const data = await res.json()
                           if(data?.success){
-                            setGroups((g)=> [data.data.group, ...g])
+                            setGroups((prev) => {
+                              const newGroups = [data.data.group, ...prev]
+                              return deduplicateGroups(newGroups)
+                            })
                             // send invites
                             await Promise.all(selectedInviteeIds.map((uid)=> fetch('/api/groups/invite',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({groupId: data.data.group._id, inviteeId: uid})})))
                             // Optionally show a toast here if available
@@ -2139,49 +2451,72 @@ useEffect(() => {
                         );
                       }
                       
-                      // Regular Chat - Show all buttons
-                      return (
-                        <>
-                          {/* Video Call with Tooltip */}
-                          <div className="relative group">
-                            <Video
-                              size={20}
-                              className="text-gray-600 cursor-pointer hover:text-blue-500 transition-colors duration-200"
-                              onClick={handleVideoCall}
-                            />
-                            <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-500 to-pink-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                              <div className="font-medium">Video Call</div>
-                              <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-blue-500"></div>
+                      // Regular Chat - Show buttons based on chat type
+                      const isGroupChat = receiverId.current?.startsWith('group_');
+                      
+                      if (isGroupChat) {
+                        // Group Chat - Only show search button
+                        return (
+                          <>
+                            {/* Search with Tooltip */}
+                            <div className="relative group">
+                              <Search 
+                                size={20} 
+                                className="text-gray-600 cursor-pointer hover:text-purple-500 transition-colors duration-200" 
+                                onClick={() => setIsSearchActive(true)}
+                              />
+                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-purple-500 to-violet-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                <div className="font-medium">Search Messages</div>
+                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-purple-500"></div>
+                              </div>
                             </div>
-                          </div>
+                          </>
+                        );
+                      } else {
+                        // Friend Chat - Show all buttons
+                        return (
+                          <>
+                            {/* Video Call with Tooltip */}
+                            <div className="relative group">
+                              <Video
+                                size={20}
+                                className="text-gray-600 cursor-pointer hover:text-blue-500 transition-colors duration-200"
+                                onClick={handleVideoCall}
+                              />
+                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-500 to-pink-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                <div className="font-medium">Video Call</div>
+                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-blue-500"></div>
+                              </div>
+                            </div>
 
-                          {/* Voice Call with Tooltip */}
-                          <div className="relative group">
-                            <Phone 
-                              size={20} 
-                              className="text-gray-600 cursor-pointer hover:text-green-500 transition-colors duration-200" 
-                              onClick={handleVoiceCall}
-                            />
-                            <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-500 to-emerald-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                              <div className="font-medium">Voice Call</div>
-                              <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-green-500"></div>
+                            {/* Voice Call with Tooltip */}
+                            <div className="relative group">
+                              <Phone 
+                                size={20} 
+                                className="text-gray-600 cursor-pointer hover:text-green-500 transition-colors duration-200" 
+                                onClick={handleVoiceCall}
+                              />
+                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-500 to-emerald-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                <div className="font-medium">Voice Call</div>
+                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-green-500"></div>
+                              </div>
                             </div>
-                          </div>
 
-                          {/* Search with Tooltip */}
-                          <div className="relative group">
-                            <Search 
-                              size={20} 
-                              className="text-gray-600 cursor-pointer hover:text-purple-500 transition-colors duration-200" 
-                              onClick={() => setIsSearchActive(true)}
-                            />
-                            <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-purple-500 to-violet-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                              <div className="font-medium">Search Messages</div>
-                              <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-purple-500"></div>
+                            {/* Search with Tooltip */}
+                            <div className="relative group">
+                              <Search 
+                                size={20} 
+                                className="text-gray-600 cursor-pointer hover:text-purple-500 transition-colors duration-200" 
+                                onClick={() => setIsSearchActive(true)}
+                              />
+                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-purple-500 to-violet-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                <div className="font-medium">Search Messages</div>
+                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-purple-500"></div>
+                              </div>
                             </div>
-                          </div>
-                        </>
-                      );
+                          </>
+                        );
+                      }
                     })()}
 
                     {/* More Options with Enhanced Dropdown */}
@@ -2199,34 +2534,6 @@ useEffect(() => {
                         
                         {/* Menu Items */}
                         <div className="py-2 bg-gradient-to-b from-gray-50 to-white">
-                          {/* Clear All Chat */}
-                          <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-red-50 hover:to-pink-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-red-400" onClick={clearAllMessages}>
-                            <div className="p-2 bg-red-100 rounded-lg mr-3 group-hover/item:bg-red-200 transition-colors duration-200">
-                              <Trash size={16} className="text-red-600" />
-                            </div>
-                            <div className="flex-1">
-                              <span className="text-sm font-medium text-gray-800 group-hover/item:text-red-700">Clear All Chat</span>
-                              <p className="text-xs text-gray-500 group-hover/item:text-red-500">Delete entire conversation</p>
-                            </div>
-                            <svg className="w-4 h-4 text-gray-400 group-hover/item:text-red-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                            </svg>
-                          </div>
-                          
-                          {/* Search in Chat */}
-                          <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-blue-400" onClick={() => setIsSearchActive(true)}>
-                            <div className="p-2 bg-blue-100 rounded-lg mr-3 group-hover/item:bg-blue-200 transition-colors duration-200">
-                              <Search size={16} className="text-blue-600" />
-                            </div>
-                            <div className="flex-1">
-                              <span className="text-sm font-medium text-gray-800 group-hover/item:text-blue-700">Search in Chat</span>
-                              <p className="text-xs text-gray-500 group-hover/item:text-blue-500">Find specific messages</p>
-                            </div>
-                            <svg className="w-4 h-4 text-gray-400 group-hover/item:text-blue-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                            </svg>
-                          </div>
-
                           {/* Export Chat */}
                           <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-green-50 hover:to-emerald-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-green-400" onClick={exportChat}>
                             <div className="p-2 bg-green-100 rounded-lg mr-3 group-hover/item:bg-green-200 transition-colors duration-200">
@@ -2243,36 +2550,93 @@ useEffect(() => {
                             </svg>
                           </div>
 
-                          {/* Copy Chat Link */}
-                          <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-purple-50 hover:to-violet-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-purple-400" onClick={() => {
-                            const chatUrl = `${window.location.origin}/ui?receiverId=${receiverId.current}`;
-                            navigator.clipboard.writeText(chatUrl);
-                            toast.success("Chat link copied to clipboard");
-                          }}>
-                            <div className="p-2 bg-purple-100 rounded-lg mr-3 group-hover/item:bg-purple-200 transition-colors duration-200">
-                              <Copy size={16} className="text-purple-600" />
+                          {/* Mute Notifications */}
+                          <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-yellow-50 hover:to-orange-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-yellow-400" onClick={toggleMuteNotifications}>
+                            <div className="p-2 bg-yellow-100 rounded-lg mr-3 group-hover/item:bg-yellow-200 transition-colors duration-200">
+                              <Bell size={16} className="text-yellow-600" />
                             </div>
                             <div className="flex-1">
-                              <span className="text-sm font-medium text-gray-800 group-hover/item:text-purple-700">Copy Chat Link</span>
-                              <p className="text-xs text-gray-500 group-hover/item:text-purple-500">Share this conversation</p>
+                              <span className="text-sm font-medium text-gray-800 group-hover/item:text-yellow-700">
+                                {isMuted ? 'Unmute Notifications' : 'Mute Notifications'}
+                              </span>
+                              <p className="text-xs text-gray-500 group-hover/item:text-yellow-500">
+                                {isMuted ? 'Enable notifications for this chat' : 'Silence this conversation'}
+                              </p>
                             </div>
-                            <svg className="w-4 h-4 text-gray-400 group-hover/item:text-purple-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <svg className="w-4 h-4 text-gray-400 group-hover/item:text-yellow-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                             </svg>
                           </div>
 
-                          {/* Mute Notifications */}
-                          <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-yellow-50 hover:to-orange-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-yellow-400">
-                            <div className="p-2 bg-yellow-100 rounded-lg mr-3 group-hover/item:bg-yellow-200 transition-colors duration-200">
-                              <svg className="w-4 h-4 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-5 5v-5zM5 7h5L5 2v5z" />
+                          {/* Group Members */}
+                          {receiverId.current?.startsWith('group_') && (
+                            <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-blue-400" onClick={showGroupMembers}>
+                              <div className="p-2 bg-blue-100 rounded-lg mr-3 group-hover/item:bg-blue-200 transition-colors duration-200">
+                                <Users size={16} className="text-blue-600" />
+                              </div>
+                              <div className="flex-1">
+                                <span className="text-sm font-medium text-gray-800 group-hover/item:text-blue-700">Group Members</span>
+                                <p className="text-xs text-gray-500 group-hover/item:text-blue-500">View all group members</p>
+                              </div>
+                              <svg className="w-4 h-4 text-gray-400 group-hover/item:text-blue-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                               </svg>
                             </div>
-                            <div className="flex-1">
-                              <span className="text-sm font-medium text-gray-800 group-hover/item:text-yellow-700">Mute Notifications</span>
-                              <p className="text-xs text-gray-500 group-hover/item:text-yellow-500">Silence this conversation</p>
+                          )}
+
+                          {/* Group Management Options */}
+                          {receiverId.current?.startsWith('group_') && (() => {
+                            const groupId = receiverId.current.replace('group_', '');
+                            const currentGroup = groups.find(g => g._id === groupId);
+                            const isGroupOwner = currentGroup?.ownerId?.toString() === session?.user?._id;
+                            
+                            if (isGroupOwner) {
+                              // Group Owner - Show Delete Group option
+                              return (
+                                <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-red-50 hover:to-pink-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-red-400" onClick={showDeleteGroupConfirmation}>
+                                  <div className="p-2 bg-red-100 rounded-lg mr-3 group-hover/item:bg-red-200 transition-colors duration-200">
+                                    <Trash size={16} className="text-red-600" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <span className="text-sm font-medium text-gray-800 group-hover/item:text-red-700">Delete Group</span>
+                                    <p className="text-xs text-gray-500 group-hover/item:text-red-500">Permanently delete this group</p>
+                                  </div>
+                                  <svg className="w-4 h-4 text-gray-400 group-hover/item:text-red-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                  </svg>
+                                </div>
+                              );
+                            } else {
+                              // Group Member - Show Exit Group option
+                              return (
+                                <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-orange-50 hover:to-red-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-orange-400" onClick={showLeaveGroupConfirmation}>
+                                  <div className="p-2 bg-orange-100 rounded-lg mr-3 group-hover/item:bg-orange-200 transition-colors duration-200">
+                                    <svg className="w-4 h-4 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                    </svg>
+                                  </div>
+                                  <div className="flex-1">
+                                    <span className="text-sm font-medium text-gray-800 group-hover/item:text-orange-700">Exit Group</span>
+                                    <p className="text-xs text-gray-500 group-hover/item:text-orange-500">Leave this group</p>
+                                  </div>
+                                  <svg className="w-4 h-4 text-gray-400 group-hover/item:text-orange-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                  </svg>
+                                </div>
+                              );
+                            }
+                          })()}
+
+                          {/* Clear All Chat - Moved to bottom */}
+                          <div className="flex items-center px-4 py-3 hover:bg-gradient-to-r hover:from-red-50 hover:to-pink-50 cursor-pointer group/item transition-all duration-200 border-l-4 border-transparent hover:border-red-400" onClick={clearAllMessages}>
+                            <div className="p-2 bg-red-100 rounded-lg mr-3 group-hover/item:bg-red-200 transition-colors duration-200">
+                              <Trash size={16} className="text-red-600" />
                             </div>
-                            <svg className="w-4 h-4 text-gray-400 group-hover/item:text-yellow-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <div className="flex-1">
+                              <span className="text-sm font-medium text-gray-800 group-hover/item:text-red-700">Clear All Chat</span>
+                              <p className="text-xs text-gray-500 group-hover/item:text-red-500">Delete entire conversation</p>
+                            </div>
+                            <svg className="w-4 h-4 text-gray-400 group-hover/item:text-red-500 opacity-0 group-hover/item:opacity-100 transition-all duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                             </svg>
                           </div>
@@ -2370,7 +2734,24 @@ useEffect(() => {
                     <ChatLoader />
                   ) : (
                     <div className="flex flex-col space-y-2">
-                      {messages?.map((message, index) => (
+                      {messages?.map((message, index) => {
+                        // Handle system messages (like leave notifications)
+                        if (message.isSystemMessage) {
+                          return (
+                            <div key={index} className="flex justify-center my-2">
+                              <div className="bg-gray-100 text-gray-600 text-sm px-4 py-2 rounded-full border border-gray-200 shadow-sm">
+                                <span className="flex items-center space-x-2">
+                                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  </svg>
+                                  <span>{message.content}</span>
+                                </span>
+                              </div>
+                            </div>
+                          )
+                        }
+                        
+                        return (
                         <div
                           key={index}
                           data-message-id={message._id}
@@ -2802,7 +3183,8 @@ useEffect(() => {
                             )}
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                       <div ref={bottomRef} />
                     </div>
                   )}
@@ -3161,6 +3543,187 @@ useEffect(() => {
         </div>
       </div>
     )}
+
+    {/* Beautiful Delete Group Confirmation Modal */}
+    {showDeleteGroupModal && (
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+        {/* Backdrop */}
+        <div aria-hidden onClick={() => setShowDeleteGroupModal(false)} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
+        {/* Modal */}
+        <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-95 animate-in zoom-in-95">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-red-500 to-pink-600 px-6 py-4 rounded-t-2xl">
+            <div className="flex items-center">
+              <div>
+                <h3 className="text-white text-lg font-semibold">Delete Group</h3>
+                <p className="text-red-100 text-sm">This action cannot be undone</p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Content */}
+          <div className="p-6">
+            <div className="flex items-start space-x-4">
+              <div className="p-3 bg-red-50 rounded-full">
+                <svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h4 className="text-gray-800 font-medium mb-2">Are you sure you want to delete this group?</h4>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  This will permanently delete the group and all its messages. All members will be removed from the group.
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Actions */}
+          <div className="px-6 py-4 bg-gray-50 rounded-b-2xl flex space-x-3">
+            <button
+              onClick={() => setShowDeleteGroupModal(false)}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmDeleteGroup}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-red-500 to-pink-600 text-white rounded-lg hover:from-red-600 hover:to-pink-700 transition-all duration-200 font-medium shadow-lg"
+            >
+              Delete Group
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Beautiful Leave Group Confirmation Modal */}
+    {showLeaveGroupModal && (
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+        {/* Backdrop */}
+        <div aria-hidden onClick={() => setShowLeaveGroupModal(false)} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
+        {/* Modal */}
+        <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-95 animate-in zoom-in-95">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-orange-500 to-red-600 px-6 py-4 rounded-t-2xl">
+            <div className="flex items-center">
+              <div>
+                <h3 className="text-white text-lg font-semibold">Leave Group</h3>
+                <p className="text-orange-100 text-sm">You can rejoin if invited again</p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Content */}
+          <div className="p-6">
+            <div className="flex items-start space-x-4">
+              <div className="p-3 bg-orange-50 rounded-full">
+                <svg className="w-6 h-6 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h4 className="text-gray-800 font-medium mb-2">Are you sure you want to leave this group?</h4>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  You will no longer receive messages from this group. You can rejoin if someone invites you again.
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Actions */}
+          <div className="px-6 py-4 bg-gray-50 rounded-b-2xl flex space-x-3">
+            <button
+              onClick={() => setShowLeaveGroupModal(false)}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmLeaveGroup}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-lg hover:from-orange-600 hover:to-red-700 transition-all duration-200 font-medium shadow-lg"
+            >
+              Leave Group
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Beautiful Group Members Modal */}
+    {showGroupMembersModal && (() => {
+      const groupId = receiverId.current?.replace('group_', '');
+      const currentGroup = groups.find(g => g._id === groupId);
+      const groupMembers = currentGroup?.members || [];
+      
+      return (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+          {/* Backdrop */}
+          <div aria-hidden onClick={() => setShowGroupMembersModal(false)} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
+          {/* Modal */}
+          <div className="relative bg-white rounded-2xl shadow-2xl max-w-lg w-full mx-4 max-h-[80vh] overflow-hidden transform transition-all duration-300 scale-95 animate-in zoom-in-95">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-blue-500 to-indigo-600 px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-white bg-opacity-20 rounded-full">
+                    <Users size={20} className="text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-white text-lg font-semibold">Group Members</h3>
+                    <p className="text-blue-100 text-sm">{groupMembers.length} members</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowGroupMembersModal(false)}
+                  className="p-2 hover:bg-white hover:bg-opacity-20 rounded-full transition-colors duration-200"
+                >
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            
+            {/* Content */}
+            <div className="p-6 max-h-96 overflow-y-auto">
+              <div className="space-y-3">
+                {groupMembers.map((member, index) => (
+                  <div key={member.userId || index} className="flex items-center space-x-4 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors duration-200">
+                    <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center shadow-lg">
+                      <span className="text-white font-semibold text-lg">
+                        {member.username?.charAt(0)?.toUpperCase() || 'U'}
+                      </span>
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="font-semibold text-gray-800">{member.username || 'Unknown User'}</h4>
+                      <p className="text-sm text-gray-500">
+                        {member.userId?.toString() === currentGroup?.ownerId?.toString() ? 'Group Owner' : 'Member'}
+                      </p>
+                    </div>
+                    {member.userId?.toString() === currentGroup?.ownerId?.toString() && (
+                      <div className="px-3 py-1 bg-gradient-to-r from-yellow-400 to-orange-500 text-white text-xs font-medium rounded-full">
+                        Owner
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="px-6 py-4 bg-gray-50 border-t">
+              <button
+                onClick={() => setShowGroupMembersModal(false)}
+                className="w-full px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg hover:from-blue-600 hover:to-indigo-700 transition-all duration-200 font-medium shadow-lg"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
   </>
 );
 }

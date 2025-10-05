@@ -27,13 +27,29 @@ export async function POST(req) {
             return response(403, {}, "Not authorized to clear this conversation", false);
         }
 
-        // Find the conversation
-        const conversation = await conversationModel.findOne({
-            participants: { $all: [senderId, receiverId] }
-        });
+        let conversation;
 
+        // Handle group conversations differently
+        if (receiverId.startsWith('group_')) {
+            const groupId = receiverId.replace('group_', '');
+            // For groups, find conversation by groupId (gracefully handle invalid ids)
+            try {
+                conversation = await conversationModel.findOne({
+                    groupId: new mongoose.Types.ObjectId(groupId)
+                });
+            } catch {
+                conversation = null;
+            }
+        } else {
+            // For direct messages, find by participants
+            conversation = await conversationModel.findOne({
+                participants: { $all: [senderId, receiverId] }
+            });
+        }
+
+        // If no conversation exists, treat as a no-op success
         if (!conversation) {
-            return response(404, {}, "Conversation not found", false);
+            return response(200, { clearedFor: senderId }, "Nothing to clear", true);
         }
 
         // Instead of deleting messages, we'll mark them as "cleared" for this user
@@ -49,6 +65,16 @@ export async function POST(req) {
                     [`clearedFor_${senderId}`]: {
                         clearedAt: Date.now(),
                         lastMessageId: lastMessage._id
+                    }
+                }
+            });
+        } else {
+            // If no messages exist, just mark as cleared
+            await conversationModel.findByIdAndUpdate(conversation._id, {
+                $set: {
+                    [`clearedFor_${senderId}`]: {
+                        clearedAt: Date.now(),
+                        lastMessageId: null
                     }
                 }
             });
