@@ -7,15 +7,21 @@ export async function POST(req) {
   const session = await getServerSession(authOptions)
   if (!session) return response(403, {}, "Not authorized", false)
 
-  const { params } = await req.json() || {}
+  const { params, resourceType } = await req.json() || {}
   // Folder scoping
   const folder = process.env.CLOUDINARY_UPLOAD_FOLDER || `messager/${session.user._id}`
   const timestamp = Math.floor(Date.now() / 1000)
 
+  const signatureParams = { timestamp, folder, ...params }
+  console.log('Cloudinary signature params:', signatureParams)
+  console.log('Resource type:', resourceType || 'image')
+
   const signature = signParams(
-    { timestamp, folder, ...params },
+    signatureParams,
     process.env.CLOUDINARY_API_SECRET
   )
+
+  console.log('Generated signature:', signature)
 
   return response(200, { 
     cloudName: process.env.CLOUDINARY_CLOUD_NAME,

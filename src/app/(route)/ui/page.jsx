@@ -110,8 +110,12 @@ export default function WhatsAppUI() {
     fileInputRef.current.click()
   }
 
-  const getCloudinarySignature = async () => {
-    const res = await fetch('/api/cloudinary-sign', { method: 'POST', body: JSON.stringify({ params: {} }) })
+  const getCloudinarySignature = async (resourceType = 'image') => {
+    const res = await fetch('/api/cloudinary-sign', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ params: {}, resourceType }) 
+    })
     const data = await res.json()
     if (!data.success) throw new Error(data.message || 'Signature failed')
     return data.data
@@ -150,25 +154,55 @@ export default function WhatsAppUI() {
       setUploadingFile(file)
       setUploadProgress(0)
       
-      const { cloudName, apiKey, timestamp, signature, folder } = await getCloudinarySignature()
+      // Determine resource type based on file type
+      const fileType = file.type.toLowerCase()
+      let resourceType = 'image' // default
       
+      if (fileType.startsWith('video/')) {
+        resourceType = 'video'
+      } else if (fileType === 'application/pdf' || 
+                 fileType.includes('document') || 
+                 fileType.includes('text') ||
+                 fileType.includes('application/')) {
+        resourceType = 'raw'
+      }
+
+      const { cloudName, apiKey, timestamp, signature, folder } = await getCloudinarySignature(resourceType)
+
       const form = new FormData()
       form.append('file', file)
       form.append('api_key', apiKey)
       form.append('timestamp', timestamp)
       form.append('signature', signature)
       form.append('folder', folder)
+      form.append('resource_type', resourceType)
+
+      console.log('Upload parameters:', {
+        cloudName,
+        apiKey,
+        timestamp,
+        signature,
+        folder,
+        resourceType,
+        fileType: file.type,
+        fileName: file.name
+      })
 
       const xhr = new XMLHttpRequest()
-      const url = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`
+      const url = `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`
       const promise = new Promise((resolve, reject) => {
         xhr.open('POST', url)
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
         }
         xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText))
-          else reject(new Error('Upload failed'))
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(JSON.parse(xhr.responseText))
+          } else {
+            console.error('Upload failed with status:', xhr.status)
+            console.error('Response:', xhr.responseText)
+            reject(new Error(`Upload failed: ${xhr.status} - ${xhr.responseText}`))
+          }
         }
         xhr.onerror = () => reject(new Error('Upload error'))
         xhr.send(form)
@@ -1484,7 +1518,7 @@ useEffect(() => {
         return next.slice(0, 50)
       })
     }
-    const onGroupLeft = (data) => {
+    const onGroupLeft = async (data) => {
       // Show leave notification in group chat
       if (receiverId.current === `group_${data.groupId}`) {
         const leaveMessage = {
@@ -1497,6 +1531,24 @@ useEffect(() => {
           isSystemMessage: true
         }
         setMessages(prev => [...prev, leaveMessage])
+        
+        // Persist the leave message to database
+        try {
+          await fetch('/api/store-message', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content: leaveMessage.content,
+              senderId: leaveMessage.senderId,
+              receiverId: leaveMessage.receiverId,
+              timestamp: leaveMessage.timestamp,
+              type: 'system',
+              isSystemMessage: true
+            })
+          })
+        } catch (error) {
+          console.error('Failed to persist leave message:', error)
+        }
       }
       // Refresh notifications from DB to avoid duplicate local + DB entries
       ;(async () => {
@@ -2738,10 +2790,10 @@ useEffect(() => {
                         // Handle system messages (like leave notifications)
                         if (message.isSystemMessage) {
                           return (
-                            <div key={index} className="flex justify-center my-2">
-                              <div className="bg-gray-100 text-gray-600 text-sm px-4 py-2 rounded-full border border-gray-200 shadow-sm">
-                                <span className="flex items-center space-x-2">
-                                  <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <div key={index} className="flex justify-center my-3">
+                              <div className="bg-gradient-to-r from-orange-100 to-red-100 text-orange-800 text-sm px-6 py-3 rounded-full border-2 border-orange-200 shadow-lg animate-pulse">
+                                <span className="flex items-center space-x-2 font-medium">
+                                  <svg className="w-4 h-4 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                   </svg>
                                   <span>{message.content}</span>
@@ -2842,9 +2894,30 @@ useEffect(() => {
                                       <video 
                                         src={message.attachment.secureUrl || message.attachment.url} 
                                         controls
-                                        className="max-w-80 max-h-80 w-auto h-auto rounded-lg object-cover"
-                                        poster={message.attachment.thumbnailUrl || message.attachment.secureUrl || message.attachment.url}
+                                        className="max-w-80 max-h-80 w-auto h-auto rounded-lg object-cover shadow-lg hover:shadow-xl transition-shadow duration-200"
                                         preload="metadata"
+                                        onLoadedMetadata={(e) => {
+                                          // Generate thumbnail if not available
+                                          if (!message.attachment.thumbnailUrl && e.target.duration > 0) {
+                                            // Set to 1 second to capture a good thumbnail
+                                            e.target.currentTime = Math.min(1, e.target.duration * 0.1);
+                                          }
+                                        }}
+                                        onSeeked={(e) => {
+                                          // Generate thumbnail after seeking
+                                          if (!message.attachment.thumbnailUrl && e.target.currentTime > 0) {
+                                            const canvas = document.createElement('canvas');
+                                            const ctx = canvas.getContext('2d');
+                                            canvas.width = e.target.videoWidth;
+                                            canvas.height = e.target.videoHeight;
+                                            ctx.drawImage(e.target, 0, 0, canvas.width, canvas.height);
+                                            const thumbnailUrl = canvas.toDataURL('image/jpeg', 0.8);
+                                            e.target.poster = thumbnailUrl;
+                                            // Reset to beginning immediately and pause
+                                            e.target.currentTime = 0;
+                                            e.target.pause();
+                                          }
+                                        }}
                                         onError={(e) => {
                                           console.error('Failed to load video:', message.attachment.url)
                                         }}
@@ -2877,7 +2950,7 @@ useEffect(() => {
                                                 document.body.removeChild(link)
                                               }
                                             }}
-                                            className="bg-black bg-opacity-50 text-white p-1 rounded-full hover:bg-opacity-70"
+                                            className="bg-blue-600 text-white p-1 rounded-full hover:bg-blue-700 shadow-lg border border-white"
                                             title="Download video"
                                           >
                                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -3237,11 +3310,23 @@ useEffect(() => {
                           />
                         )}
                         {pendingAttachment.isVideo && (
-                          <video 
-                            src={pendingAttachment.url} 
-                            className="w-16 h-16 object-cover rounded"
-                            controls={false}
-                          />
+                          <div className="relative w-16 h-16 rounded overflow-hidden bg-gray-200">
+                            <video 
+                              src={pendingAttachment.url} 
+                              className="w-full h-full object-cover"
+                              controls={false}
+                              muted
+                              onLoadedData={(e) => {
+                                // Set current time to 1 second to get a better thumbnail
+                                e.target.currentTime = 1;
+                              }}
+                            />
+                            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30">
+                              <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z"/>
+                              </svg>
+                            </div>
+                          </div>
                         )}
                         {pendingAttachment.isAudio && (
                           <div className="w-16 h-16 bg-purple-100 rounded flex items-center justify-center">
