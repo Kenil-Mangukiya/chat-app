@@ -12,7 +12,27 @@ export async function POST(req) {
   const folder = process.env.CLOUDINARY_UPLOAD_FOLDER || `messager/${session.user._id}`
   const timestamp = Math.floor(Date.now() / 1000)
 
-  const signatureParams = { timestamp, folder, ...params }
+  // Ensure resourceType is valid
+  const validResourceType = resourceType && ['image', 'video', 'raw'].includes(resourceType) 
+    ? resourceType 
+    : 'image'
+
+  // For raw files (documents), use direct upload without preset
+  if (validResourceType === 'raw') {
+    return response(200, { 
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      resourceType: validResourceType,
+      useDirectUpload: true
+    }, "Direct upload for raw files", true)
+  }
+
+  // For images/videos, generate signature
+  const signatureParams = { 
+    timestamp, 
+    folder, 
+    ...params 
+  }
   console.log('Cloudinary signature params:', signatureParams)
   console.log('Resource type:', resourceType || 'image')
 
@@ -28,7 +48,8 @@ export async function POST(req) {
     apiKey: process.env.CLOUDINARY_API_KEY,
     timestamp,
     folder,
-    signature
+    signature,
+    resourceType: validResourceType // Include the validated resourceType
   }, "Signature generated", true)
 }
 

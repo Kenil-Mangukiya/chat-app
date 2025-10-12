@@ -160,36 +160,61 @@ export default function WhatsAppUI() {
       
       if (fileType.startsWith('video/')) {
         resourceType = 'video'
+      } else if (fileType.startsWith('audio/')) {
+        resourceType = 'video' // Cloudinary uses 'video' for audio files
       } else if (fileType === 'application/pdf' || 
                  fileType.includes('document') || 
                  fileType.includes('text') ||
-                 fileType.includes('application/')) {
+                 fileType.includes('application/') ||
+                 fileType.includes('spreadsheet') ||
+                 fileType.includes('presentation') ||
+                 fileType.includes('zip') ||
+                 fileType.includes('rar') ||
+                 fileType.includes('7z') ||
+                 fileType.includes('json') ||
+                 fileType.includes('xml') ||
+                 fileType.includes('csv') ||
+                 fileType.includes('rtf') ||
+                 fileType.includes('odt') ||
+                 fileType.includes('ods') ||
+                 fileType.includes('odp')) {
         resourceType = 'raw'
       }
 
-      const { cloudName, apiKey, timestamp, signature, folder } = await getCloudinarySignature(resourceType)
+      const signatureData = await getCloudinarySignature(resourceType)
+      const { cloudName, resourceType: responseResourceType, useDirectUpload } = signatureData
 
       const form = new FormData()
       form.append('file', file)
+      form.append('resource_type', responseResourceType)
+      
+      // For raw files (documents), use unsigned preset for public access
+      if (useDirectUpload) {
+        // Use unsigned preset for public access
+        const { apiKey } = signatureData
+        form.append('api_key', apiKey)
+        form.append('upload_preset', 'unsigned')
+      } else {
+        // For images/videos, use signed upload
+        const { apiKey, timestamp, signature, folder } = signatureData
       form.append('api_key', apiKey)
       form.append('timestamp', timestamp)
       form.append('signature', signature)
       form.append('folder', folder)
-      form.append('resource_type', resourceType)
+      }
 
       console.log('Upload parameters:', {
         cloudName,
-        apiKey,
-        timestamp,
-        signature,
-        folder,
-        resourceType,
+        resourceType: responseResourceType,
         fileType: file.type,
-        fileName: file.name
+        fileName: file.name,
+        useDirectUpload,
+        uploadMethod: useDirectUpload ? 'direct' : 'signed'
       })
 
+
       const xhr = new XMLHttpRequest()
-      const url = `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`
+      const url = `https://api.cloudinary.com/v1_1/${cloudName}/${responseResourceType}/upload`
       const promise = new Promise((resolve, reject) => {
         xhr.open('POST', url)
         xhr.upload.onprogress = (e) => {
@@ -316,6 +341,89 @@ export default function WhatsAppUI() {
   const [showSearchModal, setShowSearchModal] = useState(false) // Search modal state
   const [searchQuery, setSearchQuery] = useState("") // Search query
   const [searchResults, setSearchResults] = useState([]) // Search results
+  
+  // Add Friend Modal State
+  const [showAddFriendModal, setShowAddFriendModal] = useState(false)
+  const [allUsers, setAllUsers] = useState([])
+  const [loadingUsers, setLoadingUsers] = useState(false)
+  const [friendRequestLoading, setFriendRequestLoading] = useState({})
+  const [friendSearchQuery, setFriendSearchQuery] = useState("")
+  const [lastNotificationTime, setLastNotificationTime] = useState({})
+  const [processingNotifications, setProcessingNotifications] = useState(new Set())
+  const processingRef = useRef(new Set())
+
+  // Fetch all users for add friend modal
+  const fetchAllUsers = async () => {
+    try {
+      setLoadingUsers(true)
+      const response = await fetch('/api/users/list')
+      const data = await response.json()
+      if (data.success) {
+        console.log('Fetched users with status:', data.data.users)
+        setAllUsers(data.data.users)
+      } else {
+        console.error('API Error:', data.message)
+        toast.error('Failed to load users: ' + (data.message || 'Unknown error'))
+        setAllUsers([])
+      }
+    } catch (error) {
+      console.error('Error fetching users:', error)
+      toast.error('Failed to load users. Please try again.')
+      setAllUsers([])
+    } finally {
+      setLoadingUsers(false)
+    }
+  }
+
+  // Handle opening add friend modal
+  const handleOpenAddFriendModal = () => {
+    setShowAddFriendModal(true)
+    setFriendSearchQuery("")
+    fetchAllUsers()
+  }
+
+  // Handle closing add friend modal
+  const handleCloseAddFriendModal = () => {
+    setShowAddFriendModal(false)
+    setFriendSearchQuery("")
+  }
+
+  // Filter users based on search query
+  const filteredUsers = allUsers.filter(user => 
+    user.username.toLowerCase().includes(friendSearchQuery.toLowerCase()) ||
+    user.email.toLowerCase().includes(friendSearchQuery.toLowerCase())
+  )
+
+  // Handle sending friend request
+  const handleSendFriendRequest = async (userId, username) => {
+    try {
+      setFriendRequestLoading(prev => ({ ...prev, [userId]: true }))
+      
+      const response = await fetch('/api/send-friend-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username })
+      })
+      
+      const data = await response.json()
+      if (data.success) {
+        // Update user status to 'sent'
+        setAllUsers(prev => prev.map(user => 
+          user._id === userId ? { ...user, status: 'sent' } : user
+        ))
+        toast.success(`Friend request sent to ${username}`)
+        
+        // No need to refresh the user list - the status is already updated above
+      } else {
+        toast.error(data.message || 'Failed to send friend request')
+      }
+    } catch (error) {
+      console.error('Error sending friend request:', error)
+      toast.error('Failed to send friend request')
+    } finally {
+      setFriendRequestLoading(prev => ({ ...prev, [userId]: false }))
+    }
+  }
   const [isSearchActive, setIsSearchActive] = useState(false) // Inline search state
   const [currentSearchIndex, setCurrentSearchIndex] = useState(0) // Current search result index
   const [showNotifications, setShowNotifications] = useState(false) // Notification dropdown state
@@ -362,11 +470,14 @@ export default function WhatsAppUI() {
   // Function to delete notification from database
   const deleteNotification = async (notificationId) => {
     try {
-      await fetch('/api/notifications', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notificationId })
-      })
+      // Only delete from database if it's a real database notification (MongoDB ObjectId format)
+      if (notificationId && notificationId.length === 24 && /^[0-9a-fA-F]{24}$/.test(notificationId)) {
+        await fetch('/api/notifications', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ notificationId })
+        })
+      }
     } catch (e) {
       console.error('Error deleting notification:', e)
     }
@@ -628,10 +739,22 @@ const FullUILoader = () => (
     socket.emit("status", { receiverId: receiverId.current });
 
     // Get friends list
-    socket.emit("get_friends", userId);
-    socket.on("friend_list", (friendData) => {
-      setFriends(friendData);
-    });
+      socket.emit("get_friends", userId);
+      socket.on("friend_list", (friendData) => {
+        console.log("Friend list received:", friendData)
+        
+        // Deduplicate friends by friendid to prevent duplicate React keys
+        const uniqueFriends = friendData.reduce((acc, friend) => {
+          const friendId = friend.friendid.toString()
+          if (!acc.some(f => f.friendid.toString() === friendId)) {
+            acc.push(friend)
+          }
+          return acc
+        }, [])
+        
+        console.log("Deduplicated friends:", uniqueFriends.length, "from", friendData.length)
+        setFriends(uniqueFriends);
+      });
 
     // Ensure AI friend is added for existing users
     const ensureAiFriend = async () => {
@@ -1647,25 +1770,8 @@ useEffect(() => {
           if (session?.user?._id) {
             socket.emit("get_friends", session.user._id)
           }
-          // Fallback notify sender in case API emit was queued
-          if (response.data?.data?.senderId) {
-            socket.emit("friend_request_responded", {
-              senderId: response.data.data.senderId,
-              status: "accepted",
-              receiverUsername: session?.user?.username,
-              receiverId: session?.user?._id
-            })
-          }
         } else {
           toast.info("Friend request declined")
-          if (response.data?.data?.senderId) {
-            socket.emit("friend_request_responded", {
-              senderId: response.data.data.senderId,
-              status: "declined",
-              receiverUsername: session?.user?.username,
-              receiverId: session?.user?._id
-            })
-          }
         }
       }
     } catch (error) {
@@ -1752,29 +1858,77 @@ useEffect(() => {
       // Refresh friend requests
       fetchFriendRequests()
       
-      // Show notification toast
-      toast.info(`New friend request from ${data.senderUsername}!`, {
-        position: "top-right",
-        autoClose: 5000,
-      })
+      // No toast message - just refresh the friend requests
     }
 
     // Sender gets response updates when receiver accepts/declines
     const handleFriendRequestResponded = (data) => {
       if (!data) return
-      // Push into notifications list (no toast)
+      
+      console.log('🔔 handleFriendRequestResponded called with:', data)
+      
+      // Create a unique ID based on the actual data to prevent duplicates
+      const uniqueId = `friend_response_${data.receiverId}_${data.status}_${data.receiverUsername}`
+      const now = Date.now()
+      
+      // Check if we're already processing this notification using ref (immediate check)
+      if (processingRef.current.has(uniqueId)) {
+        console.log('🚫 Notification already being processed (ref check):', uniqueId)
+        return
+      }
+      
+      // Check if we've already processed this notification recently (within 5 seconds)
+      if (lastNotificationTime[uniqueId] && (now - lastNotificationTime[uniqueId]) < 5000) {
+        console.log('🚫 Notification already processed recently:', uniqueId)
+        return
+      }
+      
+      // Mark as processing IMMEDIATELY in ref
+      processingRef.current.add(uniqueId)
+      
+      // Mark as processing in state
+      setProcessingNotifications(prev => new Set(prev).add(uniqueId))
+      
+      // Update the last notification time IMMEDIATELY
+      setLastNotificationTime(prev => ({
+        ...prev,
+        [uniqueId]: now
+      }))
+      
+      // Use a single state update with proper deduplication
       setNotifications(prev => {
         const list = prev ? [...prev] : []
-        list.unshift({
-          id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        
+        // Check if notification already exists to prevent duplicates
+        const exists = list.some(notif => notif.id === uniqueId)
+        if (exists) {
+          console.log('🚫 Duplicate notification prevented in state:', uniqueId)
+          return list
+        }
+        
+        console.log('✅ Adding new notification:', uniqueId)
+        const newNotification = {
+          id: uniqueId,
           message: data.status === 'accepted'
             ? `${data.receiverUsername} has accepted your friend request`
             : `${data.receiverUsername} has declined your friend request`,
-          timestamp: Date.now(),
+          timestamp: now,
           type: 'friend_response',
-        })
-        return list.slice(0, 50) // cap list
+        }
+        
+        return [newNotification, ...list].slice(0, 50) // cap list
       })
+      
+      // Remove from processing set after a delay
+      setTimeout(() => {
+        processingRef.current.delete(uniqueId)
+        setProcessingNotifications(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(uniqueId)
+          return newSet
+        })
+      }, 3000) // Increased to 3 seconds
+      
       // If accepted, refresh friends list
       if (data.status === 'accepted' && session?.user?._id) {
         socket.emit("get_friends", session.user._id)
@@ -1783,11 +1937,16 @@ useEffect(() => {
 
     // Add debug logging for socket events
     socket.on("friend_request_received", handleFriendRequest)
-    socket.on("friend_request_responded", handleFriendRequestResponded)
+    socket.on("friend_request_responded", (data) => {
+      console.log("🔔 friend_request_responded event received:", data)
+      handleFriendRequestResponded(data)
+    })
     
-    // Add general socket event logging
+    // Add general socket event logging (excluding friend_request_responded to prevent duplicates)
     socket.onAny((eventName, ...args) => {
-      console.log("Socket event received:", eventName, args)
+      if (eventName !== 'friend_request_responded') {
+        console.log("Socket event received:", eventName, args)
+      }
     })
     
     // Test connection response
@@ -1806,12 +1965,35 @@ useEffect(() => {
   useEffect(() => {
     try {
       const initial = JSON.parse(sessionStorage.getItem('globalNotifications') || '[]')
-      if (initial.length) setNotifications(prev => [...initial, ...(prev || [])].slice(0,50))
+      if (initial.length) {
+        setNotifications(prev => {
+          const existing = prev || []
+          const merged = [...initial, ...existing]
+          // Remove duplicates based on ID
+          const unique = merged.filter((item, index, self) => 
+            index === self.findIndex(t => t.id === item.id)
+          )
+          return unique.slice(0, 50)
+        })
+      }
     } catch {}
 
     const onGlobal = (e) => {
       const item = e.detail
-      setNotifications(prev => { const next=[item, ...(prev||[])].slice(0,50); saveGlobalNotifications(next); return next; })
+      console.log('🌐 Global notification received:', item)
+      setNotifications(prev => { 
+        const existing = prev || []
+        // Check if notification already exists to prevent duplicates
+        const exists = existing.some(notif => notif.id === item.id)
+        if (exists) {
+          console.log('🚫 Duplicate global notification prevented:', item.id)
+          return existing
+        }
+        console.log('✅ Adding global notification:', item.id)
+        const next = [item, ...existing].slice(0, 50)
+        saveGlobalNotifications(next)
+        return next
+      })
     }
     window.addEventListener('global-notification', onGlobal)
     return () => window.removeEventListener('global-notification', onGlobal)
@@ -1858,7 +2040,7 @@ useEffect(() => {
                   <UserPlus 
                     size={20} 
                     className="text-gray-600 cursor-pointer hover:text-blue-500 transition-colors duration-200" 
-                    onClick={() => router.replace("/add-friend")}
+                    onClick={handleOpenAddFriendModal}
                   />
                   <div className="absolute -top-7 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
                     <div className="font-medium">Add Friend</div>
@@ -2016,8 +2198,9 @@ useEffect(() => {
                             <div className="space-y-3">
                               {friendRequests.map((request) => (
                                 <div key={request._id} className="group p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100 hover:shadow-md transition-all duration-200 relative">
-                                  <div className="flex items-start space-x-3">
-                                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center shadow-lg">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center space-x-3 flex-1">
+                                      <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center shadow-lg">
                                       <span className="text-white text-sm font-bold">
                                         {request.senderUsername.charAt(0).toUpperCase()}
                                       </span>
@@ -2026,26 +2209,35 @@ useEffect(() => {
                                       <p className="text-sm font-semibold text-gray-800 mb-1">
                                         {request.senderUsername}
                                       </p>
-                                      <p className="text-xs text-gray-600 mb-3">
+                                        <p className="text-xs text-gray-600 mb-1">
                                         wants to be your friend
                                       </p>
-                                      <p className="text-xs text-gray-500 mb-3">
+                                        <p className="text-xs text-gray-500">
                                         {new Date(request.createdAt).toLocaleString()}
                                       </p>
-                                      <div className="flex space-x-2">
+                                      </div>
+                                    </div>
+                                    
+                                    {/* Action Buttons - Right Side */}
+                                    <div className="flex space-x-2 ml-4">
                                         <button
                                           onClick={() => respondToFriendRequest(request._id, 'accept')}
-                                          className="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white text-xs font-medium rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105"
+                                        className="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white text-xs font-medium rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105 flex items-center space-x-1"
                                         >
-                                          ✓ Accept
+                                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                        </svg>
+                                        <span>Accept</span>
                                         </button>
                                         <button
                                           onClick={() => respondToFriendRequest(request._id, 'decline')}
-                                          className="px-4 py-2 bg-gradient-to-r from-red-500 to-rose-600 text-white text-xs font-medium rounded-full hover:from-red-600 hover:to-rose-700 transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105"
+                                        className="px-4 py-2 bg-gradient-to-r from-red-500 to-rose-600 text-white text-xs font-medium rounded-full hover:from-red-600 hover:to-rose-700 transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105 flex items-center space-x-1"
                                         >
-                                          ✗ Decline
+                                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                          <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                        </svg>
+                                        <span>Decline</span>
                                         </button>
-                                      </div>
                                     </div>
                                   </div>
                                 </div>
@@ -2287,7 +2479,7 @@ useEffect(() => {
                     })}
                   </div>
                   <div className="mt-2 border-t pt-2">
-                    <button className="flex items-center text-green-600 text-sm font-medium" onClick={() => router.replace("/add-friend")}>
+                    <button className="flex items-center text-green-600 text-sm font-medium" onClick={handleOpenAddFriendModal}>
                       <UserPlus size={16} className="mr-1" />
                       Add New Friend
                     </button>
@@ -3054,28 +3246,33 @@ useEffect(() => {
                                           <button
                                             onClick={async (e) => {
                                               e.stopPropagation()
+                                              // Use signed download URL for untrusted accounts
                                               try {
+                                                console.log('Download request data:', {
+                                                  publicId: message.attachment.publicId,
+                                                  resourceType: message.attachment.resourceType,
+                                                  downloadName: message.attachment.originalFilename,
+                                                  fullAttachment: message.attachment
+                                                })
+                                                
                                                 const res = await fetch('/api/cloudinary-download', {
                                                   method: 'POST',
                                                   headers: { 'Content-Type': 'application/json' },
                                                   body: JSON.stringify({
                                                     publicId: message.attachment.publicId,
                                                     resourceType: message.attachment.resourceType,
-                                                    deliveryType: message.attachment.deliveryType,
-                                                    accessMode: message.attachment.accessMode,
-                                                    version: message.attachment.version,
-                                                    format: message.attachment.format,
                                                     downloadName: message.attachment.originalFilename,
                                                   })
                                                 })
-                                                if (!res.ok) throw new Error('Failed to sign download URL')
+                                                if (!res.ok) throw new Error('Failed to generate download URL')
                                                 const data = await res.json()
                                                 const signedUrl = data?.data?.url || data?.url
                                                 if (!signedUrl) throw new Error('No signed URL returned')
 
-                                                const fileResp = await fetch(signedUrl)
-                                                if (!fileResp.ok) throw new Error('Download request failed')
-                                                const blob = await fileResp.blob()
+                                                // Try signed URL first
+                                                const response = await fetch(signedUrl)
+                                                if (response.ok) {
+                                                  const blob = await response.blob()
                                                 const url = window.URL.createObjectURL(blob)
                                                 const link = document.createElement('a')
                                                 link.href = url
@@ -3084,29 +3281,15 @@ useEffect(() => {
                                                 link.click()
                                                 document.body.removeChild(link)
                                                 window.URL.revokeObjectURL(url)
+                                                } else {
+                                                  // If signed URL fails, open in new tab
+                                                  window.open(signedUrl, '_blank')
+                                                }
                                               } catch (error) {
                                                 console.error('Download failed:', error)
-                                                try {
-                                                  const orig = message.attachment.secureUrl || message.attachment.url
-                                                  const resp = await fetch(orig)
-                                                  const blob = await resp.blob()
-                                                  const url = window.URL.createObjectURL(blob)
-                                                  const link = document.createElement('a')
-                                                  link.href = url
-                                                  link.download = message.attachment.originalFilename || 'document'
-                                                  document.body.appendChild(link)
-                                                  link.click()
-                                                  document.body.removeChild(link)
-                                                  window.URL.revokeObjectURL(url)
-                                                } catch (e2) {
-                                                const link = document.createElement('a')
-                                                link.href = message.attachment.secureUrl || message.attachment.url
-                                                link.download = message.attachment.originalFilename || 'document'
-                                                link.target = '_blank'
-                                                document.body.appendChild(link)
-                                                link.click()
-                                                document.body.removeChild(link)
-                                                }
+                                                // Final fallback: try direct URL
+                                                const directUrl = message.attachment.secureUrl || message.attachment.url
+                                                window.open(directUrl, '_blank')
                                               }
                                             }}
                                             className="bg-blue-500 hover:bg-blue-600 text-white p-1 rounded-full transition-colors flex-shrink-0"
@@ -3809,6 +3992,213 @@ useEffect(() => {
         </div>
       );
     })()}
+
+    {/* Add Friend Modal */}
+    {showAddFriendModal && (
+      <div 
+        className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4 pb-8"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            handleCloseAddFriendModal()
+          }
+        }}
+      >
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden transform transition-all duration-300 scale-95 animate-in zoom-in-95">
+          {/* Modal Header */}
+          <div className="bg-gradient-to-r from-blue-500 to-purple-600 p-6 text-white">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">Add Friends</h2>
+                <p className="text-blue-100 mt-1">Discover and connect with people</p>
+              </div>
+              <button
+                onClick={handleCloseAddFriendModal}
+                className="text-white hover:text-gray-200 transition-colors p-2 rounded-full hover:bg-white hover:bg-opacity-20"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Search Bar */}
+          <div className="px-6 pt-4 pb-4">
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <input
+                type="text"
+                placeholder="Search users by name or email..."
+                value={friendSearchQuery}
+                onChange={(e) => setFriendSearchQuery(e.target.value)}
+                className="block w-full pl-10 pr-10 py-3 border border-gray-300 rounded-xl leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+              />
+              {friendSearchQuery && (
+                <button
+                  onClick={() => setFriendSearchQuery("")}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                >
+                  <svg className="h-5 w-5 text-gray-400 hover:text-gray-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Modal Content */}
+          <div className="px-6 pb-10">
+            {loadingUsers ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+                <span className="ml-3 text-gray-600">Loading users...</span>
+              </div>
+            ) : filteredUsers.length === 0 && !loadingUsers ? (
+              <div className="text-center py-12">
+                <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full flex items-center justify-center">
+                  <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-700 mb-2">
+                  {friendSearchQuery ? 'No users found' : 'No users available'}
+                </h3>
+                <p className="text-gray-500 mb-4">
+                  {friendSearchQuery 
+                    ? `No users match "${friendSearchQuery}". Try a different search term.`
+                    : 'There are no other users to add as friends at the moment.'
+                  }
+                </p>
+                {friendSearchQuery ? (
+                  <button
+                    onClick={() => setFriendSearchQuery("")}
+                    className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors duration-200"
+                  >
+                    Clear Search
+                  </button>
+                ) : (
+                  <button
+                    onClick={fetchAllUsers}
+                    className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-200"
+                  >
+                    Refresh
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div 
+                className="space-y-3 max-h-96 overflow-y-auto pb-6 rounded-lg"
+                style={{
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: '#d1d5db #f3f4f6'
+                }}
+              >
+                {filteredUsers.map((user, index) => (
+                  <div
+                    key={user._id}
+                    className={`flex items-center justify-between p-4 bg-white rounded-xl hover:bg-gray-50 transition-all duration-200 border border-gray-200 shadow-sm hover:shadow-md ${
+                      index === filteredUsers.length - 1 ? 'mb-2' : ''
+                    }`}
+                  >
+                    <div className="flex items-center space-x-4">
+                      {/* Avatar */}
+                      <div className="w-12 h-12 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-lg shadow-lg">
+                        {user.username.charAt(0).toUpperCase()}
+                      </div>
+                      
+                      {/* User Info */}
+                      <div>
+                        <h3 className="font-semibold text-gray-900">{user.username}</h3>
+                        <p className="text-sm text-gray-500">{user.email}</p>
+                      </div>
+                    </div>
+
+                    {/* Action Button */}
+                    <div className="flex items-center">
+                      {user.status === 'friend' && (
+                        <div className="flex items-center text-green-600 bg-green-50 px-4 py-2 rounded-full">
+                          <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm font-medium">Friends</span>
+                        </div>
+                      )}
+                      
+                      {user.status === 'sent' && (
+                        <div className="flex items-center text-blue-600 bg-blue-50 px-4 py-2 rounded-full">
+                          <svg className="w-4 h-4 mr-2 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          <span className="text-sm font-medium">Request Sent</span>
+                        </div>
+                      )}
+                      
+                      {user.status === 'received' && (
+                        <div className="flex items-center text-orange-600 bg-orange-50 px-4 py-2 rounded-full">
+                          <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm font-medium">Request Received</span>
+                        </div>
+                      )}
+                      
+                      {user.status === 'none' && (
+                        <button
+                          onClick={() => handleSendFriendRequest(user._id, user.username)}
+                          disabled={friendRequestLoading[user._id]}
+                          className="bg-gradient-to-r from-blue-500 to-purple-600 text-white px-6 py-2 rounded-full hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg hover:shadow-xl"
+                        >
+                          {friendRequestLoading[user._id] ? (
+                            <div className="flex items-center">
+                              <svg className="w-4 h-4 mr-2 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              Sending...
+                            </div>
+                          ) : (
+                            <div className="flex items-center">
+                              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                              </svg>
+                              Add Friend
+                            </div>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Modal Footer */}
+          <div className="bg-gray-50 px-6 py-5 pb-6 border-t">
+            <div className="flex justify-between items-center">
+              {filteredUsers.length > 0 && (
+                <p className="text-sm text-gray-500">
+                  {friendSearchQuery ? (
+                    `${filteredUsers.length} of ${allUsers.length} users`
+                  ) : (
+                    `${filteredUsers.length} ${filteredUsers.length === 1 ? 'user' : 'users'} found`
+                  )}
+                </p>
+              )}
+              <button
+                onClick={handleCloseAddFriendModal}
+                className="px-6 py-2 bg-gradient-to-r from-gray-500 to-gray-600 text-white rounded-full hover:from-gray-600 hover:to-gray-700 transition-all duration-200 shadow-lg hover:shadow-xl"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
   </>
 );
 }

@@ -9,9 +9,19 @@ export async function POST(req) {
     const session = await getServerSession(authOptions)
     if (!session) return response(403, {}, "Not authorized", false)
 
-    const { publicId, resourceType, deliveryType, accessMode, version, format, downloadName, expiresInSeconds } = await req.json()
+    const requestBody = await req.json()
+    const { publicId, resourceType, deliveryType, accessMode, version, format, downloadName, expiresInSeconds } = requestBody
     console.log('Download request params:', { publicId, resourceType, deliveryType, accessMode, version, format, downloadName })
+    console.log('Full request body:', requestBody)
     if (!publicId) return response(400, {}, "publicId is required", false)
+    
+    // Extract version from publicId if it contains folder structure
+    let actualPublicId = publicId
+    let extractedVersion = version
+    
+    // If publicId contains folder structure like "messager/userId/filename", use it as is
+    // If it's just "filename", we might need to reconstruct the full path
+    console.log('Processing publicId:', actualPublicId)
 
     const cfg = getCloudinaryConfig()
     console.log('Cloudinary config:', { cloudName: cfg.cloudName, hasApiKey: !!cfg.apiKey, hasApiSecret: !!cfg.apiSecret })
@@ -28,12 +38,8 @@ export async function POST(req) {
     // Trust reported resourceType when present; only fall back to raw if unknown
     const resourceTypeToUse = resourceType || (lowerFormat && rawFormats.has(lowerFormat) ? "raw" : "image")
     
-    // For raw files, always use authenticated type to ensure proper access
-    const typeToUse = (resourceTypeToUse === "raw") 
-      ? "authenticated" 
-      : (deliveryType === "private" || deliveryType === "authenticated") 
-        ? deliveryType 
-        : (accessMode === "authenticated" ? "authenticated" : "upload")
+    // For unsigned uploads, use upload type (public access)
+    const typeToUse = deliveryType || (resourceTypeToUse === "raw" ? "upload" : "upload")
     const expireAt = Math.floor(Date.now() / 1000) + (Number(expiresInSeconds) > 0 ? Number(expiresInSeconds) : 600)
     
     console.log('Processing logic:', { 
@@ -44,21 +50,19 @@ export async function POST(req) {
       expireAt 
     })
 
-    // Build a signed delivery URL. For documents, use resource_type raw.
+    // Build delivery URL. For unsigned uploads, no signature needed.
     const urlOptions = {
       resource_type: resourceTypeToUse,
       type: typeToUse,
-      sign_url: true,
       secure: true,
-      expires_at: expireAt,
     }
     
     console.log('Initial URL options:', urlOptions)
     
     // Only add version if it's provided
-    if (version) {
-      urlOptions.version = version
-      console.log('Added version to URL options:', version)
+    if (extractedVersion) {
+      urlOptions.version = extractedVersion
+      console.log('Added version to URL options:', extractedVersion)
     }
     
     // Only add attachment flags for non-raw files
@@ -75,12 +79,17 @@ export async function POST(req) {
     }
     
     console.log('Final URL options:', urlOptions)
-    const url = cloudinary.v2.url(publicId, urlOptions)
+    const url = cloudinary.v2.url(actualPublicId, urlOptions)
 
     console.log('Generated download URL:', url)
     console.log('URL params:', { resourceTypeToUse, typeToUse, expireAt })
+    console.log('Public ID being used:', actualPublicId)
 
-    return response(200, { url }, "Signed download URL generated", true)
+    return response(200, { 
+      url, 
+      type: typeToUse,
+      resourceType: resourceTypeToUse
+    }, "Signed download URL generated", true)
   } catch (err) {
     return response(500, { error: err?.message }, "Failed to generate signed URL", false)
   }
