@@ -43,16 +43,18 @@ export async function POST(req) {
             return response(403, {}, "You can't send friend request to yourself", false)
         }
 
-        // Check if they are already friends
+        // Check if they are already friends (excluding blocked friendships)
         const existingFriend = await friendModel.findOne({
             userid: session.user._id,
-            friendid: findUserByUsername._id
+            friendid: findUserByUsername._id,
+            isBlocked: { $ne: true } // Exclude blocked friendships
         })
 
         console.log("Existing friend check:", {
             existingFriend: !!existingFriend,
             userid: session.user._id,
-            friendid: findUserByUsername._id
+            friendid: findUserByUsername._id,
+            existingFriendData: existingFriend
         })
 
         if (existingFriend) {

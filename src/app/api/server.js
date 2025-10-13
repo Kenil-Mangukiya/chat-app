@@ -90,6 +90,27 @@ app.prepare().then(async () => {
       try {
         console.log("Message data is: ", messageData);
 
+        // Check if either user has blocked the other
+        const friendship1 = await friendModel.findOne({
+          userid: messageData.senderid,
+          friendid: messageData.receiverid
+        });
+
+        const friendship2 = await friendModel.findOne({
+          userid: messageData.receiverid,
+          friendid: messageData.senderid
+        });
+
+        // If either friendship is blocked, prevent messaging
+        if ((friendship1 && friendship1.isBlocked) || (friendship2 && friendship2.isBlocked)) {
+          console.log("Message blocked: Users have blocked each other");
+          io.to(messageData.senderid).emit("message_blocked", {
+            message: "You cannot send messages to this user. They have been blocked.",
+            receiverId: messageData.receiverid
+          });
+          return;
+        }
+
         let conversation = await conversationModel.findOne({
           participants: { $all: [messageData.senderid, messageData.receiverid] },
         });
@@ -125,6 +146,27 @@ app.prepare().then(async () => {
       try {
         console.log("Call requested - senderId:", senderId);
         console.log("Call requested - receiverId:", receiverId);
+
+        // Check if either user has blocked the other
+        const friendship1 = await friendModel.findOne({
+          userid: senderId,
+          friendid: receiverId
+        });
+
+        const friendship2 = await friendModel.findOne({
+          userid: receiverId,
+          friendid: senderId
+        });
+
+        // If either friendship is blocked, prevent the call
+        if ((friendship1 && friendship1.isBlocked) || (friendship2 && friendship2.isBlocked)) {
+          console.log("Call blocked: Users have blocked each other");
+          io.to(senderId).emit("call_blocked", {
+            message: "You cannot make calls to this user. They have been blocked.",
+            receiverId: receiverId
+          });
+          return;
+        }
 
         const findData = await userModel.findOne({ _id: senderId });
         console.log("Sender data found:", findData);
@@ -193,7 +235,7 @@ app.prepare().then(async () => {
 
     socket.on("get_friends", async (userId) => {
       try {
-        const friendData = await friendModel.find({ userid: userId });
+        const friendData = await friendModel.find({ userid: userId }).sort({ friendusername: 1 });
         console.log("friendData is : ",friendData)
         socket.emit("friend_list", friendData);
       } catch (error) {
@@ -320,6 +362,33 @@ app.prepare().then(async () => {
       console.log("Forwarded friend_request_responded to:", senderId, status)
     } catch (e) {
       console.log("Error forwarding friend_request_responded:", e)
+    }
+  })
+
+  // Handle friend removal notifications
+  socket.on("friend_removed_notification", ({ receiverId, removerUsername, message }) => {
+    try {
+      io.to(receiverId).emit("friend_removed_notification", {
+        removerUsername,
+        message
+      })
+      console.log("Friend removal notification sent to:", receiverId, "from:", removerUsername)
+    } catch (e) {
+      console.log("Error sending friend removal notification:", e)
+    }
+  })
+
+  // Handle friend block/unblock notifications
+  socket.on("friend_block_notification", ({ receiverId, blockerUsername, action, message }) => {
+    try {
+      io.to(receiverId).emit("friend_block_notification", {
+        blockerUsername,
+        action,
+        message
+      })
+      console.log("Friend block notification sent to:", receiverId, "action:", action, "from:", blockerUsername)
+    } catch (e) {
+      console.log("Error sending friend block notification:", e)
     }
   })
 

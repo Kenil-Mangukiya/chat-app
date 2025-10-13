@@ -18,20 +18,25 @@ export async function GET(req) {
     console.log('Session found for user:', session.user._id)
     await connectDb()
 
-    // Get all users except current user, sorted by username
+    // Get all users except current user and AI user, sorted by username
     const allUsers = await User.find({ 
-      _id: { $ne: session.user._id } 
+      _id: { $ne: session.user._id },
+      email: { $ne: 'ai@gmail.com' }
     }).select('_id username email').sort({ username: 1 })
 
     console.log('Found users:', allUsers.length)
     console.log('Users data:', allUsers.map(u => ({ id: u._id, username: u.username, email: u.email })))
 
-    // Get current user's friends
+    // Get current user's friends (excluding blocked friendships)
     const friends = await Friend.find({ 
-      userid: session.user._id 
+      userid: session.user._id,
+      isBlocked: { $ne: true } // Exclude blocked friendships
     }).select('friendid')
 
     const friendIds = friends.map(friend => friend.friendid.toString())
+    
+    console.log('Active friends (non-blocked):', friendIds)
+    console.log('All friendship records for user:', await Friend.find({ userid: session.user._id }).select('friendid isBlocked'))
 
     // Get pending friend requests sent by current user
     const sentRequests = await FriendRequest.find({ 

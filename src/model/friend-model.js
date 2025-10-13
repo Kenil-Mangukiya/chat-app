@@ -16,6 +16,15 @@ const friendSchema = new mongoose.Schema({
     friendemail : {
         type : String,
         required : true
+    },
+    isBlocked : {
+        type : Boolean,
+        default : false
+    },
+    blockedBy : {
+        type : mongoose.Schema.Types.ObjectId,
+        ref : "user",
+        default : null
     }
 },
 {

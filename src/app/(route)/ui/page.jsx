@@ -351,6 +351,10 @@ export default function WhatsAppUI() {
   const [lastNotificationTime, setLastNotificationTime] = useState({})
   const [processingNotifications, setProcessingNotifications] = useState(new Set())
   const processingRef = useRef(new Set())
+  const [blockLoading, setBlockLoading] = useState({})
+  const [removeLoading, setRemoveLoading] = useState({})
+  const [showRemoveConfirmModal, setShowRemoveConfirmModal] = useState(false)
+  const [friendToRemove, setFriendToRemove] = useState(null)
 
   // Fetch all users for add friend modal
   const fetchAllUsers = async () => {
@@ -388,11 +392,140 @@ export default function WhatsAppUI() {
     setFriendSearchQuery("")
   }
 
-  // Filter users based on search query
-  const filteredUsers = allUsers.filter(user => 
-    user.username.toLowerCase().includes(friendSearchQuery.toLowerCase()) ||
-    user.email.toLowerCase().includes(friendSearchQuery.toLowerCase())
-  )
+  // Filter users based on search query and sort by username
+  const filteredUsers = allUsers
+    .filter(user => 
+      user.username.toLowerCase().includes(friendSearchQuery.toLowerCase()) ||
+      user.email.toLowerCase().includes(friendSearchQuery.toLowerCase())
+    )
+    .sort((a, b) => a.username.localeCompare(b.username))
+
+  // Handle blocking/unblocking friend
+  const handleBlockFriend = async (friendId, action) => {
+    try {
+      setBlockLoading(prev => ({ ...prev, [friendId]: true }))
+      
+      const response = await fetch('/api/block-friend', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          friendId,
+          action
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        // Refresh friends list to get updated block status
+        socket.emit("get_friends", session.user._id)
+        
+        // Refresh users list in add friend modal if it's open
+        if (showAddFriendModal) {
+          fetchAllUsers()
+        }
+        
+        toast.success(data.message)
+        
+        // Send notification to the friend about block/unblock
+        const notificationMessage = data.data.action === 'block' 
+          ? `${data.data.blockerUsername} has blocked you`
+          : `${data.data.blockerUsername} has unblocked you`
+        
+        console.log("Sending friend block notification:", {
+          receiverId: friendId,
+          blockerUsername: data.data.blockerUsername,
+          action: data.data.action,
+          message: notificationMessage
+        })
+        
+        socket.emit("friend_block_notification", {
+          receiverId: friendId,
+          blockerUsername: data.data.blockerUsername,
+          action: data.data.action,
+          message: notificationMessage
+        })
+      } else {
+        toast.error(data.message || 'Failed to update friend status')
+      }
+    } catch (error) {
+      console.error('Error blocking/unblocking friend:', error)
+      toast.error('Failed to update friend status')
+    } finally {
+      setBlockLoading(prev => ({ ...prev, [friendId]: false }))
+    }
+  }
+
+  // Handle removing friend
+  const handleRemoveFriend = async (friendId, friendUsername) => {
+    setFriendToRemove({ id: friendId, username: friendUsername })
+    setShowRemoveConfirmModal(true)
+  }
+
+  // Confirm friend removal
+  const confirmRemoveFriend = async () => {
+    if (!friendToRemove) return
+
+    try {
+      setRemoveLoading(prev => ({ ...prev, [friendToRemove.id]: true }))
+      
+      const response = await fetch('/api/remove-friend', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          friendId: friendToRemove.id
+        })
+      })
+
+      const data = await response.json()
+
+      if (data.success) {
+        // Refresh friends list
+        socket.emit("get_friends", session.user._id)
+        
+        // Refresh users list in add friend modal if it's open
+        if (showAddFriendModal) {
+          fetchAllUsers()
+        }
+        
+        // If we're currently chatting with this friend, go back to main screen
+        if (receiverId.current === friendToRemove.id) {
+          setActiveChat(null)
+          setMessages([])
+          window.history.pushState(null, '', '/ui')
+          receiverId.current = null
+        }
+        
+        toast.success(data.message)
+        
+        // Send notification to the removed friend
+        console.log("Sending friend removal notification:", {
+          receiverId: friendToRemove.id,
+          removerUsername: data.data.removerUsername,
+          message: `${data.data.removerUsername} has removed you from friends`
+        })
+        
+        socket.emit("friend_removed_notification", {
+          receiverId: friendToRemove.id,
+          removerUsername: data.data.removerUsername,
+          message: `${data.data.removerUsername} has removed you from friends`
+        })
+      } else {
+        toast.error(data.message || 'Failed to remove friend')
+      }
+    } catch (error) {
+      console.error('Error removing friend:', error)
+      toast.error('Failed to remove friend')
+    } finally {
+      setRemoveLoading(prev => ({ ...prev, [friendToRemove.id]: false }))
+      setShowRemoveConfirmModal(false)
+      setFriendToRemove(null)
+    }
+  }
 
   // Handle sending friend request
   const handleSendFriendRequest = async (userId, username) => {
@@ -708,8 +841,12 @@ const FullUILoader = () => (
     const hasPendingAttachment = pendingAttachment !== null
     const isUploadingFile = isUploading
     
-    setEnableSend((hasContent || hasPendingAttachment) && !isUploadingFile)
-  }, [content, pendingAttachment, isUploading]);
+    // Check if current friend is blocked
+    const currentFriend = friends.find(f => f.friendid === receiverId.current);
+    const isFriendBlocked = currentFriend?.isBlocked || false;
+    
+    setEnableSend((hasContent || hasPendingAttachment) && !isUploadingFile && !isFriendBlocked)
+  }, [content, pendingAttachment, isUploading, friends, receiverId.current]);
 
   // Cleanup object URLs on unmount
   useEffect(() => {
@@ -1932,6 +2069,10 @@ useEffect(() => {
       // If accepted, refresh friends list
       if (data.status === 'accepted' && session?.user?._id) {
         socket.emit("get_friends", session.user._id)
+        // Refresh users list in add friend modal if it's open
+        if (showAddFriendModal) {
+          fetchAllUsers()
+        }
       }
     }
 
@@ -1940,6 +2081,40 @@ useEffect(() => {
     socket.on("friend_request_responded", (data) => {
       console.log("🔔 friend_request_responded event received:", data)
       handleFriendRequestResponded(data)
+    })
+
+    // Listen for friend removal notifications
+    socket.on("friend_removed_notification", (data) => {
+      console.log("Friend removed notification:", data)
+      // Refresh friends list
+      socket.emit("get_friends", session.user._id)
+      // Refresh users list in add friend modal if it's open
+      if (showAddFriendModal) {
+        fetchAllUsers()
+      }
+    })
+
+    // Listen for blocked message notifications
+    socket.on("message_blocked", (data) => {
+      console.log("Message blocked:", data)
+      toast.error(data.message)
+    })
+
+    // Listen for blocked call notifications
+    socket.on("call_blocked", (data) => {
+      console.log("Call blocked:", data)
+      toast.error(data.message)
+    })
+
+    // Listen for friend block/unblock notifications
+    socket.on("friend_block_notification", (data) => {
+      console.log("Friend block notification:", data)
+      // Refresh friends list to get updated block status
+      socket.emit("get_friends", session.user._id)
+      // Refresh users list in add friend modal if it's open
+      if (showAddFriendModal) {
+        fetchAllUsers()
+      }
     })
     
     // Add general socket event logging (excluding friend_request_responded to prevent duplicates)
@@ -1957,6 +2132,10 @@ useEffect(() => {
     return () => {
       socket.off("friend_request_received", handleFriendRequest)
       socket.off("friend_request_responded", handleFriendRequestResponded)
+      socket.off("friend_removed_notification")
+      socket.off("message_blocked")
+      socket.off("call_blocked")
+      socket.off("friend_block_notification")
       socket.offAny()
     }
   }, [session?.user?._id])
@@ -2469,11 +2648,16 @@ useEffect(() => {
                             )}
                             
                           </div>
-                          <span className={`text-sm ${
-                            isAI ? 'text-indigo-700 font-medium' : 'text-gray-800'
-                          }`}>
-                            {friend.friendusername}
-                          </span>
+                          <div className="flex flex-col">
+                            <span className={`text-sm ${
+                              isAI ? 'text-indigo-700 font-medium' : 'text-gray-800'
+                            }`}>
+                              {friend.friendusername}
+                            </span>
+                            {friend.isBlocked && (
+                              <span className="text-xs text-red-600 font-medium">Blocked</span>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -2630,7 +2814,9 @@ useEffect(() => {
       );
     }
     
-    const isAI = friends.find(f => f.friendid === receiverId.current)?.friendusername.toLowerCase().includes('ai');
+    const currentFriend = friends.find(f => f.friendid === receiverId.current);
+    const isAI = currentFriend?.friendusername.toLowerCase().includes('ai');
+    const isBlocked = currentFriend?.isBlocked;
     const currentFriendId = receiverId.current;
     const friendStatus = userStatus[currentFriendId] || status;
     
@@ -2639,6 +2825,15 @@ useEffect(() => {
         <div className="flex items-center">
           <div className="w-2 h-2 bg-green-500 rounded-full mr-1 animate-pulse"></div>
           <span className="text-xs text-green-600 font-medium">AI Assistant Online</span>
+        </div>
+      );
+    }
+    
+    if (isBlocked) {
+      return (
+        <div className="flex items-center">
+          <div className="w-2 h-2 bg-red-500 rounded-full mr-1"></div>
+          <span className="text-xs text-red-600 font-medium">Blocked</span>
         </div>
       );
     }
@@ -2673,7 +2868,9 @@ useEffect(() => {
                   </div>
                   <div className="flex items-center space-x-4">
                     {(() => {
-                      const isAI = friends.find(f => f.friendid === receiverId.current)?.friendusername.toLowerCase().includes('ai');
+                      const currentFriend = friends.find(f => f.friendid === receiverId.current);
+                      const isAI = currentFriend?.friendusername.toLowerCase().includes('ai');
+                      const isBlocked = currentFriend?.isBlocked;
                       
                       if (isAI) {
                         // AI Chat - Only show search button
@@ -2724,11 +2921,16 @@ useEffect(() => {
                             <div className="relative group">
                               <Video
                                 size={20}
-                                className="text-gray-600 cursor-pointer hover:text-blue-500 transition-colors duration-200"
-                                onClick={handleVideoCall}
+                                className={`transition-colors duration-200 ${
+                                  isBlocked 
+                                    ? 'text-gray-400 cursor-not-allowed' 
+                                    : 'text-gray-600 cursor-pointer hover:text-blue-500'
+                                }`}
+                                onClick={isBlocked ? undefined : handleVideoCall}
+                                title={isBlocked ? 'Cannot call - Friend is blocked' : 'Video Call'}
                               />
                               <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-500 to-pink-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                                <div className="font-medium">Video Call</div>
+                                <div className="font-medium">{isBlocked ? 'Cannot call - Friend is blocked' : 'Video Call'}</div>
                                 <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-blue-500"></div>
                               </div>
                             </div>
@@ -2737,12 +2939,65 @@ useEffect(() => {
                             <div className="relative group">
                               <Phone 
                                 size={20} 
-                                className="text-gray-600 cursor-pointer hover:text-green-500 transition-colors duration-200" 
-                                onClick={handleVoiceCall}
+                                className={`transition-colors duration-200 ${
+                                  isBlocked 
+                                    ? 'text-gray-400 cursor-not-allowed' 
+                                    : 'text-gray-600 cursor-pointer hover:text-green-500'
+                                }`}
+                                onClick={isBlocked ? undefined : handleVoiceCall}
+                                title={isBlocked ? 'Cannot call - Friend is blocked' : 'Voice Call'}
                               />
                               <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-500 to-emerald-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                                <div className="font-medium">Voice Call</div>
+                                <div className="font-medium">{isBlocked ? 'Cannot call - Friend is blocked' : 'Voice Call'}</div>
                                 <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-green-500"></div>
+                              </div>
+                            </div>
+
+                            {/* Block/Unblock Button */}
+                            <div className="relative group">
+                              <button
+                                onClick={() => handleBlockFriend(receiverId.current, isBlocked ? 'unblock' : 'block')}
+                                disabled={blockLoading[receiverId.current]}
+                                className={`p-2 rounded-full transition-all duration-200 ${
+                                  isBlocked 
+                                    ? 'bg-green-100 text-green-700 hover:bg-green-200' 
+                                    : 'bg-red-100 text-red-700 hover:bg-red-200'
+                                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                              >
+                                {blockLoading[receiverId.current] ? (
+                                  <div className="w-4 h-4 border border-current border-t-transparent rounded-full animate-spin"></div>
+                                ) : (
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11H7v-2h10v2z" />
+                                  </svg>
+                                )}
+                              </button>
+                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-red-500 to-pink-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                <div className="font-medium">{isBlocked ? 'Unblock Friend' : 'Block Friend'}</div>
+                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-red-500"></div>
+                              </div>
+                            </div>
+
+                            {/* Remove Friend Button */}
+                            <div className="relative group">
+                              <button
+                                onClick={() => handleRemoveFriend(receiverId.current, currentFriend?.friendusername)}
+                                disabled={removeLoading[receiverId.current]}
+                                className="p-2 rounded-full bg-gray-100 text-gray-700 hover:bg-gray-200 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {removeLoading[receiverId.current] ? (
+                                  <div className="w-4 h-4 border border-current border-t-transparent rounded-full animate-spin"></div>
+                                ) : (
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="9" cy="7" r="4"></circle>
+                                    <line x1="22" x2="16" y1="11" y2="11"></line>
+                                  </svg>
+                                )}
+                              </button>
+                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-gray-500 to-gray-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                <div className="font-medium">Remove Friend</div>
+                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-gray-500"></div>
                               </div>
                             </div>
 
@@ -3607,22 +3862,40 @@ useEffect(() => {
                         </div>
 
                         <div className="relative group">
-                          <Button type="submit" className="bg-green-500" disabled={!enableSend}>
-                            {isUploading ? (
-                              <div className="flex items-center space-x-2">
-                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                <span className="text-sm">{uploadProgress}%</span>
-                              </div>
-                            ) : (
-                              <Send size={24} />
-                            )}
-                          </Button>
-                          <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-400 to-green-800 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap z-10">
-                            <div className="font-medium">
-                              {isUploading ? `Uploading... ${uploadProgress}%` : 'Send Message'}
-                            </div>
-                            <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-green-500"></div>
-                          </div>
+                          {(() => {
+                            const currentFriend = friends.find(f => f.friendid === receiverId.current);
+                            const isFriendBlocked = currentFriend?.isBlocked || false;
+                            
+                            return (
+                              <>
+                                <Button 
+                                  type="submit" 
+                                  className={`${isFriendBlocked ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-500'}`} 
+                                  disabled={!enableSend}
+                                >
+                                  {isUploading ? (
+                                    <div className="flex items-center space-x-2">
+                                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                      <span className="text-sm">{uploadProgress}%</span>
+                                    </div>
+                                  ) : (
+                                    <Send size={24} />
+                                  )}
+                                </Button>
+                                <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-400 to-green-800 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap z-10">
+                                  <div className="font-medium">
+                                    {isFriendBlocked 
+                                      ? 'Cannot send - Friend is blocked' 
+                                      : isUploading 
+                                        ? `Uploading... ${uploadProgress}%` 
+                                        : 'Send Message'
+                                    }
+                                  </div>
+                                  <div className={`absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent ${isFriendBlocked ? 'border-t-gray-400' : 'border-t-green-500'}`}></div>
+                                </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       </form>
                     </FormProvider>
@@ -3912,6 +4185,67 @@ useEffect(() => {
               className="flex-1 px-4 py-2 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-lg hover:from-orange-600 hover:to-red-700 transition-all duration-200 font-medium shadow-lg"
             >
               Leave Group
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Beautiful Remove Friend Confirmation Modal */}
+    {showRemoveConfirmModal && (
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+        {/* Backdrop */}
+        <div aria-hidden onClick={() => setShowRemoveConfirmModal(false)} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
+        {/* Modal */}
+        <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-95 animate-in zoom-in-95">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-gray-500 to-gray-600 px-6 py-4 rounded-t-2xl">
+            <div className="flex items-center">
+              <div>
+                <h3 className="text-white text-lg font-semibold">Remove Friend</h3>
+                <p className="text-gray-200 text-sm">This action cannot be undone</p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Content */}
+          <div className="p-6">
+            <div className="flex items-start space-x-4">
+              <div className="p-3 bg-gray-50 rounded-full">
+                <svg className="w-6 h-6 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h4 className="text-gray-800 font-medium mb-2">Are you sure you want to remove {friendToRemove?.username} from your friends?</h4>
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  This will remove {friendToRemove?.username} from your friends list. They will be notified about this action and you won't be able to send messages to each other.
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          {/* Actions */}
+          <div className="px-6 py-4 bg-gray-50 rounded-b-2xl flex space-x-3">
+            <button
+              onClick={() => setShowRemoveConfirmModal(false)}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmRemoveFriend}
+              disabled={removeLoading[friendToRemove?.id]}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-gray-500 to-gray-600 text-white rounded-lg hover:from-gray-600 hover:to-gray-700 transition-all duration-200 font-medium shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {removeLoading[friendToRemove?.id] ? (
+                <div className="flex items-center justify-center">
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
+                  Removing...
+                </div>
+              ) : (
+                'Remove Friend'
+              )}
             </button>
           </div>
         </div>
