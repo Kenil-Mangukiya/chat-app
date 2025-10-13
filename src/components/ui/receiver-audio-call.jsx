@@ -21,6 +21,9 @@ export default function ReceiverVoiceCall() {
   const [isMuted, setIsMuted] = useState(false);
   const socketInitialized = useRef(false);
   const [localStream, setLocalStream] = useState(null);
+  const hasJoinedRef = useRef(false);
+  const cameraOffEnforcerRef = useRef(null);
+  const domObserverRef = useRef(null);
 
   const roomId = params.receiverid;
   const callerId = params.receiverid;
@@ -134,14 +137,15 @@ export default function ReceiverVoiceCall() {
   // Accept call
   const handleAcceptCall = async () => {
     if (!session || !containerRef.current) return;
+    if (hasJoinedRef.current) return; // prevent duplicate accepts
 
     setCallStatus("connecting");
     const receiverId = session.user._id;
 
     try {
       const { ZegoUIKitPrebuilt } = await import("@zegocloud/zego-uikit-prebuilt");
-      const appID = 1435275233;
-      const serverSecret = "caa3311cb5e882904f5ad14266aab629";
+      const appID = config.zegoCloudAppId;
+      const serverSecret = config.zegoCloudServerSecret;
       const userID = session.user._id;
       const userName = session.user.username;
 
@@ -159,11 +163,12 @@ export default function ReceiverVoiceCall() {
 
       setZpInstance(instance);
 
-      // Emit call accepted event
+      // Emit call accepted event (notify sender explicitly)
       socket.emit("call_accepted", {
         receiverId: receiverId
       });
 
+      hasJoinedRef.current = true;
       instance.joinRoom({
         container: containerRef.current,
         scenario: {
@@ -199,12 +204,32 @@ export default function ReceiverVoiceCall() {
             customizeZegoUI();
           }, 500);
 
-          // Additional check to ensure camera is off
+          // Ensure camera stays off
+          if (instance && typeof instance.turnCameraOn === "function") {
+            instance.turnCameraOn(false);
+          }
           setTimeout(() => {
             if (instance && typeof instance.turnCameraOn === "function") {
               instance.turnCameraOn(false);
             }
-          }, 1000);
+          }, 800);
+
+          // Extra safeguard: repeated enforcement
+          if (!cameraOffEnforcerRef.current) {
+            let attempts = 0;
+            cameraOffEnforcerRef.current = setInterval(() => {
+              attempts += 1;
+              if (instance && typeof instance.turnCameraOn === "function") {
+                instance.turnCameraOn(false);
+              }
+              if (attempts >= 6) {
+                clearInterval(cameraOffEnforcerRef.current);
+                cameraOffEnforcerRef.current = null;
+              }
+            }, 500);
+          }
+
+          startCameraOffDomWatcher();
         },
         
         onLeaveRoom: () => {
@@ -248,6 +273,23 @@ export default function ReceiverVoiceCall() {
     if (controlBar) {
       controlBar.style.display = 'none'; // Hide the default control bar
     }
+  };
+
+  const startCameraOffDomWatcher = () => {
+    if (domObserverRef.current) return;
+    const observer = new MutationObserver(() => {
+      const videos = document.querySelectorAll("video");
+      videos.forEach((v) => {
+        const stream = v.srcObject;
+        if (stream) {
+          stream.getVideoTracks?.().forEach((t) => {
+            try { t.stop(); t.enabled = false; } catch {}
+          });
+        }
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    domObserverRef.current = observer;
   };
 
    // Set up socket listeners immediately when component mounts

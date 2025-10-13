@@ -16,8 +16,8 @@ const roomID = roomid
 
       const appID = config.zegoCloudAppId;
       const serverSecret = config.zegoCloudServerSecret;
-      const userID = roomid; // or generate one
-      const userName = "Kenil";
+      const userID = `${roomid}-${Math.random().toString(36).slice(2,8)}`; // unique per client
+      const userName = `User-${userID.slice(-4)}`;
         console.log("appID is : ",appID)
       const kitToken = ZegoUIKitPrebuilt.generateKitTokenForTest(
         appID,

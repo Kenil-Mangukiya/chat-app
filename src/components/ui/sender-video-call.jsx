@@ -18,6 +18,7 @@ export default function SenderVideoCall() {
   const callTimeRef = useRef(null);
   const [callStatus, setCallStatus] = useState("connecting");
   const [receiverData, setReceiverData] = useState({});
+  const hasJoinedRef = useRef(false);
 
   const roomId = params.receiverId;
   const receiverId = params.receiverId;
@@ -105,6 +106,7 @@ export default function SenderVideoCall() {
   useEffect(() => {
     const startMeeting = async () => {
       if (!session || !containerRef.current) return;
+      if (hasJoinedRef.current) return; // prevent duplicate joins
 
       setIsCallConnecting(true);
       setCallStatus("connecting");
@@ -131,6 +133,7 @@ export default function SenderVideoCall() {
 
         setZpInstance(instance);
 
+        hasJoinedRef.current = true;
         instance.joinRoom({
           container: containerRef.current,
           scenario: {
@@ -196,14 +199,14 @@ export default function SenderVideoCall() {
 
     
       socket.emit("join_room", session.user._id);
-      socket.on("accepted",() => {
+      socket.once("accepted",() => {
         setCallStatus("active");
         startMeeting()
       })
     
 
     return () => {
-      socket.off("call_accepted");
+      socket.off("accepted");
       socket.off("call_declined");
       socket.off("call_ended");
       socket.off("userData");

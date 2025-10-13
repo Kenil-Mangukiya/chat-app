@@ -19,6 +19,10 @@ export default function SenderVoiceCall() {
   const [callStatus, setCallStatus] = useState("connecting");
   const [receiverData, setReceiverData] = useState({});
   const [isMuted, setIsMuted] = useState(false);
+  const hasJoinedRef = useRef(false);
+  const isStartingRef = useRef(false);
+  const cameraOffEnforcerRef = useRef(null);
+  const domObserverRef = useRef(null);
 
   const roomId = params.receiverid;
   const receiverId = params.receiverid;
@@ -153,9 +157,29 @@ const toggleMute = () => {
     }
   };
 
+  const startCameraOffDomWatcher = () => {
+    // Observe DOM for any video elements and kill their video tracks immediately
+    if (domObserverRef.current) return;
+    const observer = new MutationObserver(() => {
+      const videos = document.querySelectorAll("video");
+      videos.forEach((v) => {
+        const stream = v.srcObject;
+        if (stream) {
+          stream.getVideoTracks?.().forEach((t) => {
+            try { t.stop(); t.enabled = false; } catch {}
+          });
+        }
+      });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    domObserverRef.current = observer;
+  };
+
   useEffect(() => {
     const startVoiceCall = async () => {
       if (!session || !containerRef.current) return;
+      if (hasJoinedRef.current || isStartingRef.current || isCallActive) return; // prevent duplicate joins
+      isStartingRef.current = true;
 
       setIsCallConnecting(true);
       setCallStatus("connecting");
@@ -163,8 +187,8 @@ const toggleMute = () => {
 
       try {
         const { ZegoUIKitPrebuilt } = await import("@zegocloud/zego-uikit-prebuilt");
-        const appID = 1435275233;
-        const serverSecret = "caa3311cb5e882904f5ad14266aab629";
+        const appID = config.zegoCloudAppId;
+        const serverSecret = config.zegoCloudServerSecret;
         const userID = session.user._id;
         const userName = session.user.username;
 
@@ -182,6 +206,7 @@ const toggleMute = () => {
 
         setZpInstance(instance);
 
+        hasJoinedRef.current = true;
         instance.joinRoom({
           container: containerRef.current,
           scenario: {
@@ -217,12 +242,33 @@ const toggleMute = () => {
               customizeZegoUI();
             }, 500);
 
-            // Additional check to ensure camera is off
+            // Ensure camera stays off
+            if (instance && typeof instance.turnCameraOn === "function") {
+              instance.turnCameraOn(false);
+            }
             setTimeout(() => {
               if (instance && typeof instance.turnCameraOn === "function") {
                 instance.turnCameraOn(false);
               }
-            }, 1000);
+            }, 800);
+
+            // Extra safeguard: enforce camera off a few times after join
+            if (!cameraOffEnforcerRef.current) {
+              let attempts = 0;
+              cameraOffEnforcerRef.current = setInterval(() => {
+                attempts += 1;
+                if (instance && typeof instance.turnCameraOn === "function") {
+                  instance.turnCameraOn(false);
+                }
+                if (attempts >= 6) {
+                  clearInterval(cameraOffEnforcerRef.current);
+                  cameraOffEnforcerRef.current = null;
+                }
+              }, 500);
+            }
+
+            // Start DOM watcher as a last resort to ensure no video stream remains
+            startCameraOffDomWatcher();
           },
           
           onLeaveRoom: () => {
@@ -256,13 +302,16 @@ const toggleMute = () => {
         setIsCallConnecting(false);
         setCallStatus("failed");
         setTimeout(() => router.push(`/ui?receiverId=${receiverId}`), 2000);
+      } finally {
+        isStartingRef.current = false;
       }
     };
 
     
       socket.emit("join_room", session?.user?._id);
-      socket.on("accepted",() => {
-        setCallStatus("active")
+      socket.once("accepted",() => {
+        // Immediate UI feedback that receiver picked up
+        setCallStatus("accepted");
         startVoiceCall()
       })  
 
@@ -273,12 +322,20 @@ const toggleMute = () => {
       socket.off("call_declined");
       socket.off("call_ended");
       socket.off("userData");
+      if (cameraOffEnforcerRef.current) {
+        clearInterval(cameraOffEnforcerRef.current);
+        cameraOffEnforcerRef.current = null;
+      }
       
       if (callTimeRef.current) {
         clearInterval(callTimeRef.current);
         callTimeRef.current = null;
       }
       stopAllStreams();
+      if (domObserverRef.current) {
+        domObserverRef.current.disconnect();
+        domObserverRef.current = null;
+      }
     };
   }, [session, roomId]);
 
@@ -384,8 +441,8 @@ const toggleMute = () => {
         </div>
       )}
 
-      {/* Connecting overlay */}
-      {callStatus === "connecting" && (
+      {/* Connecting/Accepted overlay */}
+      {(callStatus === "connecting" || callStatus === "accepted") && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 bg-opacity-90 z-20">
           <div className="relative w-24 h-24">
             <div className="absolute inset-0 rounded-full bg-indigo-500 opacity-30 animate-ping"></div>
@@ -394,7 +451,7 @@ const toggleMute = () => {
             </div>
           </div>
           <h2 className="text-2xl font-bold text-white mt-8 mb-2">
-            Calling{receiverData.username ? ` ${receiverData.username}` : '...'}
+            {callStatus === "accepted" ? "Connecting..." : `Calling${receiverData.username ? ` ${receiverData.username}` : '...'}`}
           </h2>
           <p className="text-indigo-300">Voice call</p>
           

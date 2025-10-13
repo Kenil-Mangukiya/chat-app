@@ -22,6 +22,7 @@ export default function ReceiverVideoCall() {
   const [callStatus, setCallStatus] = useState("incoming");
   const socketInitialized = useRef(false);
   const callStartTime = useRef(null);
+  const hasJoinedRef = useRef(false);
 
   const formatCallTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -63,6 +64,7 @@ export default function ReceiverVideoCall() {
   };
 
   const acceptCall = async () => {
+    if (hasJoinedRef.current) return; // prevent duplicate accepts
 
     socket.emit("call_accepted",{receiverId : roomId})
     console.log("call accepted")
@@ -88,6 +90,7 @@ export default function ReceiverVideoCall() {
       const instance = ZegoUIKitPrebuilt.create(kitToken);
       setZpInstance(instance);
 
+      hasJoinedRef.current = true;
       instance.joinRoom({
         container: containerRef.current,
         scenario: {
