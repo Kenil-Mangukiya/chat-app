@@ -25,6 +25,7 @@ export default function ReceiverVoiceCall() {
   const hasJoinedRef = useRef(false);
   const cameraOffEnforcerRef = useRef(null);
   const domObserverRef = useRef(null);
+  const endedByRemoteRef = useRef(false);
 
   const roomId = params.receiverid;
   const callerId = params.receiverid;
@@ -104,8 +105,8 @@ export default function ReceiverVoiceCall() {
       zpInstance.leaveRoom();
     }
 
-    // Store call history
-    if (session?.user?._id && callerId) {
+    // Store call history only if local user ended (avoid duplicates)
+    if (!endedByRemoteRef.current && session?.user?._id && callerId) {
       try {
         await storeCallHistory({
           senderId: callerId,
@@ -121,10 +122,14 @@ export default function ReceiverVoiceCall() {
       }
     }
 
-    socket.emit("call_ended",{
-      endedBy : session.user._id,
-      direction : "receiver"
-    })
+    if (!endedByRemoteRef.current) {
+      socket.emit("call_ended",{
+        receiverId: callerId,
+        endedBy : session.user._id,
+        direction : "receiver",
+        duration: callTime
+      })
+    }
 
     if (callTimeRef.current) {
       clearInterval(callTimeRef.current);
@@ -359,7 +364,19 @@ export default function ReceiverVoiceCall() {
         });
         
         // Listen for call ended by caller
-        socket.once("call_ended_by_sender", () => {
+        socket.once("call_ended_by_sender", (data) => {
+            endedByRemoteRef.current = true;
+            if (typeof data?.duration === "number" && data.duration >= 0) {
+              setCallTime(data.duration);
+            }
+            handleEndCall();
+        });
+        // Fallback: also react to generic call_ended
+        socket.once("call_ended", (data) => {
+            endedByRemoteRef.current = true;
+            if (typeof data?.duration === "number" && data.duration >= 0) {
+              setCallTime(data.duration);
+            }
             handleEndCall();
         });
         
@@ -376,6 +393,7 @@ export default function ReceiverVoiceCall() {
       return () => {
         socket.off("sender_data");
         socket.off("call_ended_by_sender")
+        socket.off("call_ended")
         clearInterval(callTimeRef.current);
       };
     }, []);

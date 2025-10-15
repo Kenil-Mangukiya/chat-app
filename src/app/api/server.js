@@ -248,28 +248,20 @@ app.prepare().then(async () => {
       io.to(userId).emit("group_invited", { groupId });
     });
 
-    socket.on("call_ended",({receiverId,endedBy,direction}) => {
-      console.log("sender :_________",receiverId)
-      console.log("call ended is called from sender end")
-
-      const callData = callDataCache.get(endedBy)
-      const callerData = callDataCache.get(receiverId)
-      console.log("callData is : ",callData)
-      console.log("callerData is : ",callerData)
-      const id = callData?.senderData._id.toString()
-      console.log("id is : ",id)
-      if(callerData)
-      {
-        if(direction == "sender")
-      {
-      io.to(receiverId).emit("call_ended_by_sender",[])
-      console.log("call_ended_by_sender is called-------------")
-      }
-    }
-      if(callData)
-      {
-        console.log("call cut from receiver")
-        io.to(id).emit("call_ended_by_receiver",[])
+    socket.on("call_ended",({receiverId,endedBy,direction,duration}) => {
+      try {
+        console.log("call_ended received", { receiverId, endedBy, direction, duration })
+        // Emit based solely on provided ids so we don't rely on cache
+        if (direction === "sender" && receiverId) {
+          io.to(receiverId).emit("call_ended_by_sender", { duration })
+          console.log("Emitted call_ended_by_sender to", receiverId)
+        }
+        if (direction === "receiver" && receiverId) {
+          io.to(receiverId).emit("call_ended_by_receiver", { duration })
+          console.log("Emitted call_ended_by_receiver to", receiverId)
+        }
+      } catch (e) {
+        console.log("Error handling call_ended:", e)
       }
     })
 

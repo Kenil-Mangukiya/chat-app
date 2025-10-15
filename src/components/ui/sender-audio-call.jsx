@@ -22,6 +22,8 @@ export default function SenderVoiceCall() {
   const [isMuted, setIsMuted] = useState(false);
   const hasJoinedRef = useRef(false);
   const isStartingRef = useRef(false);
+  const joinRequestedRef = useRef(false);
+  const endedByRemoteRef = useRef(false);
   const cameraOffEnforcerRef = useRef(null);
   const domObserverRef = useRef(null);
   const effectSetupRef = useRef(false);
@@ -81,7 +83,11 @@ const toggleMute = () => {
 };
 
   useEffect(() => {
-    socket.once("call_ended_by_receiver",() => {
+    socket.once("call_ended_by_receiver",(data) => {
+      endedByRemoteRef.current = true;
+      if (typeof data?.duration === "number" && data.duration >= 0) {
+        setCallTime(data.duration);
+      }
       handleEndCall()
     })
     return () => {
@@ -114,8 +120,8 @@ const toggleMute = () => {
       zpInstance.leaveRoom();
     }
     
-    // Store call history
-    if (session?.user?._id && receiverId) {
+    // Store call history only if local user ended (avoid duplicate records)
+    if (!endedByRemoteRef.current && session?.user?._id && receiverId) {
       try {
         await storeCallHistory({
           senderId: session.user._id,
@@ -132,11 +138,14 @@ const toggleMute = () => {
     }
     
     // Notify other user the call has ended
-    socket.emit("call_ended", {
-      receiverId: receiverId,
-      endedBy: session?.user?._id,
-      direction : "sender"
-    });
+    if (!endedByRemoteRef.current) {
+      socket.emit("call_ended", {
+        receiverId: receiverId,
+        endedBy: session?.user?._id,
+        direction : "sender",
+        duration: callTime
+      });
+    }
     
     if (callTimeRef.current) {
       clearInterval(callTimeRef.current);
@@ -202,7 +211,7 @@ const toggleMute = () => {
   useEffect(() => {
     const startVoiceCall = async () => {
       if (!session || !containerRef.current) return;
-      if (hasJoinedRef.current || isStartingRef.current || isCallActive) {
+      if (hasJoinedRef.current || joinRequestedRef.current || isStartingRef.current || isCallActive) {
         console.log("Preventing duplicate join - already joined or starting");
         return;
       }
@@ -236,13 +245,13 @@ const toggleMute = () => {
         setZpInstance(instance);
 
         // Double-check before joining room
-        if (hasJoinedRef.current) {
+        if (hasJoinedRef.current || joinRequestedRef.current) {
           console.log("Already joined room, skipping joinRoom call");
           return;
         }
         
-        hasJoinedRef.current = true;
-        console.log("Calling joinRoom for voice call");
+        joinRequestedRef.current = true;
+        console.log("Calling joinRoom for voice call (first and only time)");
         instance.joinRoom({
           container: containerRef.current,
           scenario: {
@@ -262,6 +271,8 @@ const toggleMute = () => {
           maxUsers: 2,
           onJoinRoom: () => {
             console.log("Successfully joined room");
+            hasJoinedRef.current = true;
+            joinRequestedRef.current = false;
             setIsCallConnecting(false);
             setIsCallActive(true);
             setCallStatus("active");
@@ -314,6 +325,8 @@ const toggleMute = () => {
           
           onLeaveRoom: () => {
             console.log("Left room");
+            hasJoinedRef.current = false;
+            joinRequestedRef.current = false;
             handleEndCall();
           },
           
@@ -365,6 +378,7 @@ const toggleMute = () => {
         setIsCallConnecting(false);
         setCallStatus("failed");
         hasJoinedRef.current = false; // Reset on error
+        joinRequestedRef.current = false;
         setTimeout(() => router.push(`/ui?receiverId=${receiverId}`), 2000);
       } finally {
         isStartingRef.current = false;
@@ -395,6 +409,7 @@ const toggleMute = () => {
       
       // Reset all refs
       hasJoinedRef.current = false;
+      joinRequestedRef.current = false;
       isStartingRef.current = false;
       effectSetupRef.current = false;
       

@@ -214,10 +214,11 @@ export default function ReceiverVideoCall() {
       }
     }, 100);
     
-    // Notify the sender that the receiver ended the call
-    socket.emit("call_ended_by_receiver", {
-      callerId: roomId,
-      endedBy: session?.user?._id
+    // Notify the sender that the receiver ended the call (standardized event)
+    socket.emit("call_ended", {
+      receiverId: roomId,
+      endedBy: session?.user?._id,
+      direction: "receiver"
     });
     
     setIsCallActive(false);
@@ -269,8 +270,8 @@ export default function ReceiverVideoCall() {
         setCallerData(data);
       });
       
-      // Listen for call ended by caller
-      socket.on("call_ended_by_caller", () => {
+      // Listen for call ended by caller (standardized to sender)
+      socket.on("call_ended_by_sender", () => {
         if (isCallActive) {
           setCallStatus("ended_remote");
           handleEndCall();
@@ -289,7 +290,7 @@ export default function ReceiverVideoCall() {
     
     return () => {
       socket.off("sender_data");
-      socket.off("call_ended_by_caller");
+      socket.off("call_ended_by_sender");
       
       // Cleanup timer on unmount
       if (callTimeRef.current) {

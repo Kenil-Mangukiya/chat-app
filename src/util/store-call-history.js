@@ -26,11 +26,10 @@ export const storeCallHistory = async (callData) => {
 
 // Format call duration from seconds to MM:SS format
 export const formatCallDuration = (seconds) => {
-    if (!seconds || seconds === 0) return '0:00';
-    
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    
+    if (seconds == null || isNaN(seconds)) return '0:00';
+    const total = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(total / 60);
+    const remainingSeconds = total % 60;
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 };
 

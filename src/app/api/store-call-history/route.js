@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import message from "@/model/message-model";
 import conversation from "@/model/conversation-model";
-import { connectDB } from "@/db/connect-db";
+import { connectDb } from "@/db/connect-db";
+import { emitToUser } from "@/lib/socket-server";
 
 export async function POST(request) {
     try {
         console.log("Call history API called");
-        await connectDB();
+        await connectDb();
         
         const { senderId, receiverId, callType, duration, status, direction, roomId } = await request.json();
         console.log("Received data:", { senderId, receiverId, callType, duration, status, direction, roomId });
@@ -40,24 +41,41 @@ export async function POST(request) {
             console.log("Found existing conversation:", conversationDoc._id);
         }
         
-        // Create call history message
-        console.log("Creating call message...");
-        const callMessage = await message.create({
+        // Upsert call history message by roomId to avoid duplicates
+        console.log("Upserting call message by roomId...");
+        const existing = await message.findOne({
             conversationid: conversationDoc._id,
-            senderid: senderId,
-            receiverid: receiverId,
-            type: "direct",
             messageType: "call",
-            content: `${callType === "voice" ? "Voice" : "Video"} call`,
-            callData: {
-                callType,
-                duration: duration || 0,
-                status: status || "ended",
-                direction,
-                roomId
-            }
+            "callData.roomId": roomId
         });
-        console.log("Created call message:", callMessage._id);
+
+        let callMessage;
+        if (existing) {
+            const newDuration = Math.max(existing.callData?.duration || 0, duration || 0);
+            existing.callData.duration = newDuration;
+            existing.callData.status = status || existing.callData.status || "ended";
+            // Keep original direction/sender/receiver to preserve who initiated; don't flip sides
+            await existing.save();
+            callMessage = existing;
+            console.log("Updated existing call message:", callMessage._id);
+        } else {
+            callMessage = await message.create({
+                conversationid: conversationDoc._id,
+                senderid: senderId,
+                receiverid: receiverId,
+                type: "direct",
+                messageType: "call",
+                content: `${callType === "voice" ? "Voice" : "Video"} call`,
+                callData: {
+                    callType,
+                    duration: duration || 0,
+                    status: status || "ended",
+                    direction,
+                    roomId
+                }
+            });
+            console.log("Created new call message:", callMessage._id);
+        }
         
         // Populate the message with user data
         console.log("Populating message data...");
@@ -65,6 +83,17 @@ export async function POST(request) {
             .populate('senderid', 'username avatar')
             .populate('receiverid', 'username avatar');
         
+        // Emit to both participants so chat updates in real-time
+        try {
+            emitToUser(senderId, "send_message_to_sender", populatedMessage);
+            emitToUser(receiverId, "send_message_to_receiver", populatedMessage);
+            // Also emit generic events some UIs listen for
+            emitToUser(senderId, "message_sent", populatedMessage);
+            emitToUser(receiverId, "receive_message", populatedMessage);
+        } catch (e) {
+            console.log("Non-fatal: error emitting call history events", e);
+        }
+
         console.log("Call history stored successfully");
         return NextResponse.json({
             success: true,

@@ -79,7 +79,8 @@ export default function SenderVideoCall() {
     // Notify other user the call has ended
     socket.emit("call_ended", {
       receiverId: receiverId,
-      endedBy: session?.user?._id
+      endedBy: session?.user?._id,
+      direction: "sender"
     });
     
     if (callTimeRef.current) {

@@ -151,14 +151,15 @@ function ChatPage() {
                             {getCallIcon()}
                         </div>
                         <div className="flex-1">
-                            <div className="font-medium text-sm">
-                                {statusText}
+                            <div className="font-medium text-sm flex items-center gap-2">
+                                <span>{statusText}</span>
+                                {duration && (
+                                  <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-white/60">
+                                    <PhoneCall className="w-3 h-3 opacity-80" />
+                                    {duration}
+                                  </span>
+                                )}
                             </div>
-                            {duration && (
-                                <div className="text-xs opacity-75 mt-1">
-                                    Duration: {duration}
-                                </div>
-                            )}
                             <div className="text-xs opacity-60 mt-1">
                                 {new Date(msg.createdAt).toLocaleTimeString([], { 
                                     hour: '2-digit', 
