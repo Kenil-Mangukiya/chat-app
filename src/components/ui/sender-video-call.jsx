@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { config } from "@/config/config";
 import { Phone, PhoneOff, Clock } from "lucide-react";
 import socket from "@/lib/socket";
+import { storeCallHistory } from "@/util/store-call-history";
 
 export default function SenderVideoCall() {
   const containerRef = useRef(null);
@@ -45,7 +46,7 @@ export default function SenderVideoCall() {
   };
 
   // End call
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
     // Immediately disable camera and microphone before anything else
     if (zpInstance && typeof zpInstance.turnCameraOn === "function") {
       zpInstance.turnCameraOn(false);
@@ -56,6 +57,23 @@ export default function SenderVideoCall() {
     
     if (zpInstance && typeof zpInstance.leaveRoom === "function") {
       zpInstance.leaveRoom();
+    }
+    
+    // Store call history
+    if (session?.user?._id && receiverId) {
+      try {
+        await storeCallHistory({
+          senderId: session.user._id,
+          receiverId: receiverId,
+          callType: "video",
+          duration: callTime,
+          status: callTime > 0 ? "ended" : "declined",
+          direction: "outgoing",
+          roomId: roomId
+        });
+      } catch (error) {
+        console.error("Failed to store call history:", error);
+      }
     }
     
     // Notify other user the call has ended

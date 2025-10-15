@@ -11,7 +11,8 @@ import { useSession } from "next-auth/react"
 import { useSearchParams } from "next/navigation"
 import { useEffect, useState, useRef } from "react"
 import { FormProvider, useForm } from "react-hook-form"
-import { Bell, MessageCircle } from "lucide-react"
+import { Bell, MessageCircle, Phone, Video, PhoneOff, PhoneCall } from "lucide-react"
+import { formatCallDuration, getCallStatusText } from "@/util/store-call-history"
 
 function ChatPage() {
     const { data: session, status } = useSession()
@@ -106,16 +107,112 @@ function ChatPage() {
         }
     }
 
+    // Function to render call history message
+    const renderCallMessage = (msg) => {
+        const isOwnMessage = msg.senderid === session?.user?._id;
+        const callData = msg.callData;
+        const statusText = getCallStatusText(callData.status, callData.direction, callData.callType);
+        const duration = callData.duration > 0 ? formatCallDuration(callData.duration) : null;
+        
+        // Determine icon and colors based on call type and status
+        const getCallIcon = () => {
+            if (callData.status === 'missed' || callData.status === 'declined') {
+                return callData.callType === 'voice' ? 
+                    <PhoneOff className="w-4 h-4" /> : 
+                    <Video className="w-4 h-4" />;
+            }
+            return callData.callType === 'voice' ? 
+                <Phone className="w-4 h-4" /> : 
+                <Video className="w-4 h-4" />;
+        };
+
+        const getCallColors = () => {
+            if (callData.status === 'missed' || callData.status === 'declined') {
+                return {
+                    bg: isOwnMessage ? 'bg-red-50 border-red-200' : 'bg-red-50 border-red-200',
+                    text: 'text-red-700',
+                    icon: 'text-red-500'
+                };
+            }
+            return {
+                bg: isOwnMessage ? 'bg-green-50 border-green-200' : 'bg-green-50 border-green-200',
+                text: 'text-green-700',
+                icon: 'text-green-500'
+            };
+        };
+
+        const colors = getCallColors();
+
+        return (
+            <div className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} mb-3`}>
+                <div className={`max-w-xs px-4 py-3 rounded-2xl border ${colors.bg} ${colors.text} shadow-sm`}>
+                    <div className="flex items-center space-x-3">
+                        <div className={`${colors.icon}`}>
+                            {getCallIcon()}
+                        </div>
+                        <div className="flex-1">
+                            <div className="font-medium text-sm">
+                                {statusText}
+                            </div>
+                            {duration && (
+                                <div className="text-xs opacity-75 mt-1">
+                                    Duration: {duration}
+                                </div>
+                            )}
+                            <div className="text-xs opacity-60 mt-1">
+                                {new Date(msg.createdAt).toLocaleTimeString([], { 
+                                    hour: '2-digit', 
+                                    minute: '2-digit' 
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    // Function to render regular text message
+    const renderTextMessage = (msg) => {
+        const isOwnMessage = msg.senderid === session?.user?._id;
+        
+        return (
+            <div className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} mb-3`}>
+                <div className={`max-w-xs px-4 py-3 rounded-2xl ${
+                    isOwnMessage 
+                        ? 'bg-blue-500 text-white' 
+                        : 'bg-gray-100 text-gray-800'
+                } shadow-sm`}>
+                    <div className="text-sm">
+                        {msg.content}
+                    </div>
+                    <div className={`text-xs mt-1 ${
+                        isOwnMessage ? 'text-blue-100' : 'text-gray-500'
+                    }`}>
+                        {new Date(msg.createdAt).toLocaleTimeString([], { 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                        })}
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
     return (
         <div className="p-4">
             {/* Display messages */}
-            <div className="mb-4 border rounded p-3 heigth-auto max-h-96 overflow-y-auto">
+            <div className="mb-4 border rounded-lg p-4 h-auto max-h-96 overflow-y-auto bg-gray-50">
                 {messages.map((msg, index) => (
-                    <div key={index} className={`p-2 mb-2 rounded ${msg.senderid === session?.user?._id ? "bg-blue-100 ml-auto" : "bg-gray-100"}`}>
-                        {msg.content}
+                    <div key={index}>
+                        {msg.messageType === 'call' ? renderCallMessage(msg) : renderTextMessage(msg)}
                     </div>
                 ))}
-                {messages.length === 0 && <p className="text-gray-400">No messages yet</p>}
+                {messages.length === 0 && (
+                    <div className="flex items-center justify-center h-32">
+                        <p className="text-gray-400 text-center">No messages yet</p>
+                    </div>
+                )}
             </div>
 
             {/* Message input form */}

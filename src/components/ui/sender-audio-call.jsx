@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { config } from "@/config/config";
 import { Phone, PhoneOff, Mic, MicOff, User, Clock } from "lucide-react";
 import socket from "@/lib/socket";
+import { storeCallHistory } from "@/util/store-call-history";
 
 export default function SenderVoiceCall() {
   const containerRef = useRef(null);
@@ -23,6 +24,7 @@ export default function SenderVoiceCall() {
   const isStartingRef = useRef(false);
   const cameraOffEnforcerRef = useRef(null);
   const domObserverRef = useRef(null);
+  const effectSetupRef = useRef(false);
 
   const roomId = params.receiverid;
   const receiverId = params.receiverid;
@@ -88,8 +90,12 @@ const toggleMute = () => {
   },[])
 
   // End call
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
     console.log("call cut from sender")
+    
+    // Reset state flags immediately to prevent re-joins
+    hasJoinedRef.current = false;
+    isStartingRef.current = false;
     
     // Stop all streams first
     stopAllStreams();
@@ -108,6 +114,23 @@ const toggleMute = () => {
       zpInstance.leaveRoom();
     }
     
+    // Store call history
+    if (session?.user?._id && receiverId) {
+      try {
+        await storeCallHistory({
+          senderId: session.user._id,
+          receiverId: receiverId,
+          callType: "voice",
+          duration: callTime,
+          status: callTime > 0 ? "ended" : "declined",
+          direction: "outgoing",
+          roomId: roomId
+        });
+      } catch (error) {
+        console.error("Failed to store call history:", error);
+      }
+    }
+    
     // Notify other user the call has ended
     socket.emit("call_ended", {
       receiverId: receiverId,
@@ -120,6 +143,11 @@ const toggleMute = () => {
       callTimeRef.current = null;
     }
     
+    if (cameraOffEnforcerRef.current) {
+      clearInterval(cameraOffEnforcerRef.current);
+      cameraOffEnforcerRef.current = null;
+    }
+    
     setIsCallActive(false);
     setCallStatus("ended");
     
@@ -127,10 +155,6 @@ const toggleMute = () => {
     setTimeout(() => {
       router.push(`/ui?receiverId=${receiverId}`);
     }, 200);
-
-    return () => {
-      socket.off("call_ended")
-    }
   };
 
   const customizeZegoUI = () => {
@@ -178,7 +202,12 @@ const toggleMute = () => {
   useEffect(() => {
     const startVoiceCall = async () => {
       if (!session || !containerRef.current) return;
-      if (hasJoinedRef.current || isStartingRef.current || isCallActive) return; // prevent duplicate joins
+      if (hasJoinedRef.current || isStartingRef.current || isCallActive) {
+        console.log("Preventing duplicate join - already joined or starting");
+        return;
+      }
+      
+      console.log("Starting voice call - setting isStartingRef to true");
       isStartingRef.current = true;
 
       setIsCallConnecting(true);
@@ -206,7 +235,14 @@ const toggleMute = () => {
 
         setZpInstance(instance);
 
+        // Double-check before joining room
+        if (hasJoinedRef.current) {
+          console.log("Already joined room, skipping joinRoom call");
+          return;
+        }
+        
         hasJoinedRef.current = true;
+        console.log("Calling joinRoom for voice call");
         instance.joinRoom({
           container: containerRef.current,
           scenario: {
@@ -225,6 +261,7 @@ const toggleMute = () => {
           showConnectionState: false, // Hide connection state
           maxUsers: 2,
           onJoinRoom: () => {
+            console.log("Successfully joined room");
             setIsCallConnecting(false);
             setIsCallActive(true);
             setCallStatus("active");
@@ -242,29 +279,33 @@ const toggleMute = () => {
               customizeZegoUI();
             }, 500);
 
-            // Ensure camera stays off
-            if (instance && typeof instance.turnCameraOn === "function") {
-              instance.turnCameraOn(false);
-            }
-            setTimeout(() => {
+            // Aggressively ensure camera stays off
+            const enforceCameraOff = () => {
               if (instance && typeof instance.turnCameraOn === "function") {
                 instance.turnCameraOn(false);
               }
-            }, 800);
+            };
 
-            // Extra safeguard: enforce camera off a few times after join
+            // Immediate enforcement
+            enforceCameraOff();
+            
+            // Multiple delayed enforcements
+            setTimeout(enforceCameraOff, 100);
+            setTimeout(enforceCameraOff, 500);
+            setTimeout(enforceCameraOff, 1000);
+            setTimeout(enforceCameraOff, 2000);
+
+            // Extra safeguard: enforce camera off repeatedly
             if (!cameraOffEnforcerRef.current) {
               let attempts = 0;
               cameraOffEnforcerRef.current = setInterval(() => {
                 attempts += 1;
-                if (instance && typeof instance.turnCameraOn === "function") {
-                  instance.turnCameraOn(false);
-                }
-                if (attempts >= 6) {
+                enforceCameraOff();
+                if (attempts >= 10) {
                   clearInterval(cameraOffEnforcerRef.current);
                   cameraOffEnforcerRef.current = null;
                 }
-              }, 500);
+              }, 300);
             }
 
             // Start DOM watcher as a last resort to ensure no video stream remains
@@ -272,10 +313,12 @@ const toggleMute = () => {
           },
           
           onLeaveRoom: () => {
+            console.log("Left room");
             handleEndCall();
           },
           
           onUserLeave: () => {
+            console.log("Remote user left");
             // Handle remote user leaving
             setTimeout(() => {
               handleEndCall();
@@ -283,14 +326,34 @@ const toggleMute = () => {
           },
         });
       
-        socket.on("call_declined", (data) => {
+        socket.on("call_declined", async (data) => {
+          console.log("Call declined");
           setCallStatus("declined");
+          
+          // Store call history for declined call
+          if (session?.user?._id && receiverId) {
+            try {
+              await storeCallHistory({
+                senderId: session.user._id,
+                receiverId: receiverId,
+                callType: "voice",
+                duration: 0,
+                status: "declined",
+                direction: "outgoing",
+                roomId: roomId
+              });
+            } catch (error) {
+              console.error("Failed to store call history:", error);
+            }
+          }
+          
           setTimeout(() => {
             handleEndCall();
           }, 1000);
         });
         
         socket.on("call_ended", (data) => {
+          console.log("Call ended by remote");
           if (isCallActive || isCallConnecting) {
             setCallStatus("ended_remote");
             handleEndCall();
@@ -301,27 +364,40 @@ const toggleMute = () => {
         console.error("Failed to start voice call:", error);
         setIsCallConnecting(false);
         setCallStatus("failed");
+        hasJoinedRef.current = false; // Reset on error
         setTimeout(() => router.push(`/ui?receiverId=${receiverId}`), 2000);
       } finally {
         isStartingRef.current = false;
       }
     };
 
-    
-      socket.emit("join_room", session?.user?._id);
-      socket.once("accepted",() => {
-        // Immediate UI feedback that receiver picked up
+    // Only emit join_room and set up socket listeners if we have a session and haven't set up yet
+    if (session?.user?._id && !effectSetupRef.current) {
+      console.log("Setting up socket listeners for voice call");
+      effectSetupRef.current = true;
+      
+      socket.emit("join_room", session.user._id);
+      
+      // Use once to prevent multiple listeners
+      socket.once("accepted", () => {
+        console.log("Call accepted, starting voice call");
         setCallStatus("accepted");
-        startVoiceCall()
-      })  
-
-    
+        startVoiceCall();
+      });
+    }
 
     return () => {
+      console.log("Cleaning up voice call effect");
       socket.off("accepted");
       socket.off("call_declined");
       socket.off("call_ended");
       socket.off("userData");
+      
+      // Reset all refs
+      hasJoinedRef.current = false;
+      isStartingRef.current = false;
+      effectSetupRef.current = false;
+      
       if (cameraOffEnforcerRef.current) {
         clearInterval(cameraOffEnforcerRef.current);
         cameraOffEnforcerRef.current = null;
@@ -331,7 +407,9 @@ const toggleMute = () => {
         clearInterval(callTimeRef.current);
         callTimeRef.current = null;
       }
+      
       stopAllStreams();
+      
       if (domObserverRef.current) {
         domObserverRef.current.disconnect();
         domObserverRef.current = null;

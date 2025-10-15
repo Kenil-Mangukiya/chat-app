@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { config } from "@/config/config";
 import { Phone, PhoneOff, Mic, Video, Clock } from "lucide-react";
 import socket from "@/lib/socket";
+import { storeCallHistory } from "@/util/store-call-history";
 
 export default function ReceiverVideoCall() {
   const containerRef = useRef(null);
@@ -162,7 +163,7 @@ export default function ReceiverVideoCall() {
     });
   };
 
-  const handleEndCall = () => {
+  const handleEndCall = async () => {
     // Clear the timer first
     if (callTimeRef.current) {
       clearInterval(callTimeRef.current);
@@ -184,6 +185,23 @@ export default function ReceiverVideoCall() {
     // Leave the Zego room
     if (zpInstance && typeof zpInstance.leaveRoom === "function") {
       zpInstance.leaveRoom();
+    }
+    
+    // Store call history
+    if (session?.user?._id && roomId) {
+      try {
+        await storeCallHistory({
+          senderId: roomId,
+          receiverId: session.user._id,
+          callType: "video",
+          duration: callTime,
+          status: callTime > 0 ? "ended" : "missed",
+          direction: "incoming",
+          roomId: roomId
+        });
+      } catch (error) {
+        console.error("Failed to store call history:", error);
+      }
     }
     
     // Additional cleanup - force stop any remaining media
@@ -211,11 +229,29 @@ export default function ReceiverVideoCall() {
     }, 800);
   };
 
-  const declineCall = () => {
+  const declineCall = async () => {
     // Notify the sender that the call was declined
     socket.emit("call_declined", { callerId: roomId });
     
     setCallStatus("declined");
+    
+    // Store call history for declined call
+    if (session?.user?._id && roomId) {
+      try {
+        await storeCallHistory({
+          senderId: roomId,
+          receiverId: session.user._id,
+          callType: "video",
+          duration: 0,
+          status: "declined",
+          direction: "incoming",
+          roomId: roomId
+        });
+      } catch (error) {
+        console.error("Failed to store call history:", error);
+      }
+    }
+    
     setTimeout(() => {
       handleEndCall();
     }, 500);

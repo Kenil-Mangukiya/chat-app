@@ -23,6 +23,36 @@ const messageSchema = new mongoose.Schema(
             type : String,
             required : false
         },
+        messageType: {
+            type: String,
+            enum: ["text", "call", "attachment"],
+            default: "text"
+        },
+        callData: {
+            callType: {
+                type: String,
+                enum: ["voice", "video"],
+                required: function() { return this.messageType === "call" }
+            },
+            duration: {
+                type: Number, // Duration in seconds
+                default: 0
+            },
+            status: {
+                type: String,
+                enum: ["missed", "answered", "declined", "ended"],
+                default: "ended"
+            },
+            direction: {
+                type: String,
+                enum: ["incoming", "outgoing"],
+                required: function() { return this.messageType === "call" }
+            },
+            roomId: {
+                type: String,
+                required: function() { return this.messageType === "call" }
+            }
+        },
         attachment: {
             url: { type: String },
             publicId: { type: String },

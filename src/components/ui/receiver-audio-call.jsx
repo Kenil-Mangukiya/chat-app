@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react";
 import { config } from "@/config/config";
 import { Phone, PhoneOff, Mic, MicOff, User, Clock } from "lucide-react";
 import socket from "@/lib/socket";
+import { storeCallHistory } from "@/util/store-call-history";
 
 export default function ReceiverVoiceCall() {
   const containerRef = useRef(null);
@@ -83,6 +84,9 @@ export default function ReceiverVoiceCall() {
   const handleEndCall = async () => {
     console.log("handleEndCall is called")
     
+    // Reset state flags immediately to prevent re-joins
+    hasJoinedRef.current = false;
+    
     // Stop all streams first
     stopAllStreams();
     
@@ -100,6 +104,23 @@ export default function ReceiverVoiceCall() {
       zpInstance.leaveRoom();
     }
 
+    // Store call history
+    if (session?.user?._id && callerId) {
+      try {
+        await storeCallHistory({
+          senderId: callerId,
+          receiverId: session.user._id,
+          callType: "voice",
+          duration: callTime,
+          status: callTime > 0 ? "ended" : "missed",
+          direction: "incoming",
+          roomId: roomId
+        });
+      } catch (error) {
+        console.error("Failed to store call history:", error);
+      }
+    }
+
     socket.emit("call_ended",{
       endedBy : session.user._id,
       direction : "receiver"
@@ -108,6 +129,11 @@ export default function ReceiverVoiceCall() {
     if (callTimeRef.current) {
       clearInterval(callTimeRef.current);
       callTimeRef.current = null;
+    }
+    
+    if (cameraOffEnforcerRef.current) {
+      clearInterval(cameraOffEnforcerRef.current);
+      cameraOffEnforcerRef.current = null;
     }
     
     setIsCallActive(false);
@@ -120,13 +146,30 @@ export default function ReceiverVoiceCall() {
   };
 
   // Decline call
-  const handleDeclineCall = () => {
+  const handleDeclineCall = async () => {
     socket.emit("call_declined", {
       callerId: callerId,
       receiverId: session?.user?._id
     });
     
     setCallStatus("declined");
+    
+    // Store call history for declined call
+    if (session?.user?._id && callerId) {
+      try {
+        await storeCallHistory({
+          senderId: callerId,
+          receiverId: session.user._id,
+          callType: "voice",
+          duration: 0,
+          status: "declined",
+          direction: "incoming",
+          roomId: roomId
+        });
+      } catch (error) {
+        console.error("Failed to store call history:", error);
+      }
+    }
     
     // Short delay before navigating away
     setTimeout(() => {
@@ -137,7 +180,10 @@ export default function ReceiverVoiceCall() {
   // Accept call
   const handleAcceptCall = async () => {
     if (!session || !containerRef.current) return;
-    if (hasJoinedRef.current) return; // prevent duplicate accepts
+    if (hasJoinedRef.current) {
+      console.log("Preventing duplicate accept - already joined");
+      return;
+    }
 
     setCallStatus("connecting");
     const receiverId = session.user._id;
@@ -187,6 +233,7 @@ export default function ReceiverVoiceCall() {
         showConnectionState: false, // Hide connection state
         maxUsers: 2,
         onJoinRoom: () => {
+          console.log("Receiver successfully joined room");
           setIsCallConnecting(false);
           setIsCallActive(true);
           setCallStatus("active");
@@ -204,39 +251,45 @@ export default function ReceiverVoiceCall() {
             customizeZegoUI();
           }, 500);
 
-          // Ensure camera stays off
-          if (instance && typeof instance.turnCameraOn === "function") {
-            instance.turnCameraOn(false);
-          }
-          setTimeout(() => {
+          // Aggressively ensure camera stays off
+          const enforceCameraOff = () => {
             if (instance && typeof instance.turnCameraOn === "function") {
               instance.turnCameraOn(false);
             }
-          }, 800);
+          };
 
-          // Extra safeguard: repeated enforcement
+          // Immediate enforcement
+          enforceCameraOff();
+          
+          // Multiple delayed enforcements
+          setTimeout(enforceCameraOff, 100);
+          setTimeout(enforceCameraOff, 500);
+          setTimeout(enforceCameraOff, 1000);
+          setTimeout(enforceCameraOff, 2000);
+
+          // Extra safeguard: enforce camera off repeatedly
           if (!cameraOffEnforcerRef.current) {
             let attempts = 0;
             cameraOffEnforcerRef.current = setInterval(() => {
               attempts += 1;
-              if (instance && typeof instance.turnCameraOn === "function") {
-                instance.turnCameraOn(false);
-              }
-              if (attempts >= 6) {
+              enforceCameraOff();
+              if (attempts >= 10) {
                 clearInterval(cameraOffEnforcerRef.current);
                 cameraOffEnforcerRef.current = null;
               }
-            }, 500);
+            }, 300);
           }
 
           startCameraOffDomWatcher();
         },
         
         onLeaveRoom: () => {
+          console.log("Receiver left room");
           handleEndCall();
         },
         
         onUserLeave: () => {
+          console.log("Remote user left");
           // Handle remote user leaving
           setTimeout(() => {
             handleEndCall();
@@ -247,6 +300,7 @@ export default function ReceiverVoiceCall() {
       console.error("Failed to join voice call:", error);
       setIsCallConnecting(false);
       setCallStatus("failed");
+      hasJoinedRef.current = false; // Reset on error
       setTimeout(() => router.push(`/ui?callerId=${callerId}`), 2000);
     }
   };
