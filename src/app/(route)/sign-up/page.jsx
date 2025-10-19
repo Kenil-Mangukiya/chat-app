@@ -53,12 +53,15 @@ function SignUpPage() {
   const [otp, setOtp] = useState("")
   const [otpError, setOtpError] = useState("")
   const otpRef = useRef("")
+  const fileInputRef = useRef(null)
   const debouncedEmail = useDebounceCallback(setEmail, 300)
   const [emailMessage, setEmailMessage] = useState("")
   const [lengthChecked, setLengthChecked] = useState(false)
   const [googleAuthMessage, setGoogleAuthMessage] = useState("")
   const [googleAuthError, setGoogleAuthError] = useState("")
   const [isGoogleLoading, setIsGoogleLoading] = useState(false)
+  const [profilePicture, setProfilePicture] = useState(null)
+  const [profilePicturePreview, setProfilePicturePreview] = useState(null)
   
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -177,14 +180,14 @@ function SignUpPage() {
 
   const enableConfirmButton = () => {
     setEnableConfirm(true)
-    if (usernameMessage.includes("Username is available") && finalChecked && email.includes('@') && email.includes('.') && emailMessage.includes("can register")) {
+    if (usernameMessage.includes("Username is available") && email.includes('@') && email.includes('.') && emailMessage.includes("can register")) {
       setEnableConfirm(false)
     }
   }
 
   useEffect(() => {
     enableConfirmButton()
-  }, [username, email, password, usernameMessage, finalChecked,emailMessage])
+  }, [username, email, password, usernameMessage, emailMessage])
 
   const generateOtp = () => {
     const code = Math.floor(100000 + Math.random() * 900000)
@@ -193,6 +196,36 @@ function SignUpPage() {
   }
 
   const onConfirmClick = async () => {
+    // Validate password before sending OTP
+    const passwordValidation = () => {
+      const hasUpperAndLower = /(?=.*[a-z])(?=.*[A-Z])/.test(password);
+      const hasNumbers = /(?=.*\d)/.test(password);
+      const hasSpecialChars = /(?=.*[!@#$%^&*(),.?":{}|<>])/.test(password);
+      const checkLength = password.length > 5
+
+      if (!checkLength) {
+        toast.error("Password must be at least 6 characters long")
+        return false
+      }
+      if (!hasUpperAndLower) {
+        toast.error("Password must contain both uppercase and lowercase letters")
+        return false
+      }
+      if (!hasNumbers) {
+        toast.error("Password must contain at least one number")
+        return false
+      }
+      if (!hasSpecialChars) {
+        toast.error("Password must contain at least one special character")
+        return false
+      }
+      return true
+    }
+
+    if (!passwordValidation()) {
+      return
+    }
+
     try {
       const code = generateOtp()
       console.log("code is : ",code)
@@ -246,12 +279,33 @@ function SignUpPage() {
     }
   }, [otp])
 
+  const handleProfilePictureChange = (e) => {
+    const file = e.target.files[0]
+    if (file) {
+      setProfilePicture(file)
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        setProfilePicturePreview(e.target.result)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const removeProfilePicture = () => {
+    setProfilePicture(null)
+    setProfilePicturePreview(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
   const handleGoogleSignUp = async () => {
     try {
       setIsGoogleLoading(true)
-      await signIn("google", { callbackUrl: "/" })
+      await signIn("google", { callbackUrl: "/ui" })
     } catch (error) {
       console.error("Google sign-in error:", error)
+      toast.error("Google sign-up failed. Please try again.")
     } finally {
       setIsGoogleLoading(false)
     }
@@ -262,11 +316,21 @@ function SignUpPage() {
       try {
         setOtpError("")
         setSubmitLoading(true)
-        const response = await axios.post("/api/sign-up", {
-          username,
-          email,
-          password,
-          otp: otpRef.current
+        
+        // Create FormData to handle file upload
+        const formData = new FormData()
+        formData.append('username', username)
+        formData.append('email', email)
+        formData.append('password', password)
+        formData.append('otp', otpRef.current)
+        if (profilePicture) {
+          formData.append('profilePicture', profilePicture)
+        }
+        
+        const response = await axios.post("/api/sign-up", formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
         })
         toast.success(response.data.message || "User registered successfully")
         // Redirect to signin page after successful registration
@@ -302,6 +366,54 @@ function SignUpPage() {
 
         <FormProvider {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+            {/* Profile Picture Field */}
+            <div className="space-y-4">
+              <label className="text-gray-700 font-medium ml-28 mb-4">Profile Picture (Optional)</label>
+              <div className="flex flex-col items-center space-y-4">
+                {profilePicturePreview ? (
+                  <div className="relative">
+                    <img
+                      src={profilePicturePreview}
+                      alt="Profile preview"
+                      className="w-24 h-24 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={removeProfilePicture}
+                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <div className="w-24 h-24 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center text-white text-2xl font-bold shadow-lg">
+                    {username ? username.charAt(0).toUpperCase() : '?'}
+                  </div>
+                )}
+                <div className="flex flex-col items-center space-y-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleProfilePictureChange}
+                    className="hidden"
+                    id="profile-picture"
+                  />
+                  <label
+                    htmlFor="profile-picture"
+                    className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg cursor-pointer hover:bg-indigo-200 transition-colors font-medium"
+                  >
+                    {profilePicture ? 'Change Picture' : 'Choose Picture'}
+                  </label>
+                  {profilePicture && (
+                    <p className="text-xs text-gray-500 text-center">
+                      {profilePicture.name}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <FormField
               control={form.control}
               name="username"
@@ -397,43 +509,6 @@ function SignUpPage() {
               )}
             />
 
-            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Password Requirements:</h3>
-              <ul className="space-y-2">
-                <li className="flex items-center">
-                  <span className={`mr-2 ${lengthChecked ? "text-green-500" : "text-red-500"}`}>
-                    {lengthChecked ? <FaCheck /> : <FaTimes />}
-                  </span>
-                  <span className={`text-sm ${lengthChecked ? "text-green-700" : "text-gray-600"}`}>
-                    At least 6 characters
-                  </span>
-                </li>
-                <li className="flex items-center">
-                  <span className={`mr-2 ${oneChecked ? "text-green-500" : "text-red-500"}`}>
-                    {oneChecked ? <FaCheck /> : <FaTimes />}
-                  </span>
-                  <span className={`text-sm ${oneChecked ? "text-green-700" : "text-gray-600"}`}>
-                    Uppercase and lowercase letters
-                  </span>
-                </li>
-                <li className="flex items-center">
-                  <span className={`mr-2 ${twoChecked ? "text-green-500" : "text-red-500"}`}>
-                    {twoChecked ? <FaCheck /> : <FaTimes />}
-                  </span>
-                  <span className={`text-sm ${twoChecked ? "text-green-700" : "text-gray-600"}`}>
-                    At least one number
-                  </span>
-                </li>
-                <li className="flex items-center">
-                  <span className={`mr-2 ${threeChecked ? "text-green-500" : "text-red-500"}`}>
-                    {threeChecked ? <FaCheck /> : <FaTimes />}
-                  </span>
-                  <span className={`text-sm ${threeChecked ? "text-green-700" : "text-gray-600"}`}>
-                    At least one special character
-                  </span>
-                </li>
-              </ul>
-            </div>
 
             <motion.div
               whileHover={{ scale: 1.02 }}

@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import socket from '@/lib/socket';
 import { messageSchema } from '@/schema/message-schema';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { MessageCircle, Search, MoreVertical, Paperclip, Smile, Mic, Send, ChevronLeft, User, LogOut, UserPlus, Users, Copy, Delete, Users2, ArrowUpDown, ArrowUp, ArrowDown, Bot, UserMinus, Trash, Bell } from 'lucide-react';
+import { MessageCircle, Search, MoreVertical, Paperclip, Smile, Mic, Send, ChevronLeft, User, LogOut, UserPlus, Users, Copy, Delete, Users2, ArrowUpDown, ArrowUp, ArrowDown, Bot, UserMinus, Trash, Bell, Phone, Video } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
@@ -16,17 +16,20 @@ import data from '@emoji-mart/data';
 import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
 import axios, { AxiosError } from 'axios';
 import { toast } from 'react-toastify';
-import { signOut } from "next-auth/react";
+import { signOut, update } from "next-auth/react";
+import { generateAvatarInitials, generateAvatarColor } from "@/util/generate-avatar";
+import { Avatar } from "@/components/ui/avatar";
+import { ChatlyLoader } from "@/components/ui/chatly-loader";
 
 
-export default function WhatsAppUI() {
+export default function ChatlyUI() {
   // Add CSS for search highlight animation
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
       .search-highlight {
         animation: searchBlink 2s ease-in-out;
-        background-color: #fef3c7 !important;
+        background-color: #fef3c7image.png !important;
         border-radius: 8px;
         transition: all 0.3s ease;
       }
@@ -48,17 +51,110 @@ export default function WhatsAppUI() {
   }, []);
   const [showProfile, setShowProfile] = useState(false);
   const [showFriends, setShowFriends] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profilePicture, setProfilePicture] = useState(null);
+  const [profilePicturePreview, setProfilePicturePreview] = useState(null);
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
+  const [editableUsername, setEditableUsername] = useState('');
   const [friends, setFriends] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
-  const { data: session } = useSession();
+  const { data: session, update } = useSession();
+  const [sessionData, setSessionData] = useState(session);
   const router = useRouter();
+
+  // Sync session data with local state
+  useEffect(() => {
+    setSessionData(session);
+  }, [session]);
+
+  // Listen for session update events
+  useEffect(() => {
+    const handleSessionUpdate = (event) => {
+      const updatedUser = event.detail.user;
+      if (updatedUser) {
+        setSessionData(prev => ({
+          ...prev,
+          user: updatedUser
+        }));
+      }
+    };
+
+    window.addEventListener('session-update', handleSessionUpdate);
+    return () => window.removeEventListener('session-update', handleSessionUpdate);
+  }, []);
+
+  // Listen for profile updates from other users
+  useEffect(() => {
+    const handleProfileUpdate = (data) => {
+      console.log('Profile updated for user:', data);
+      console.log('Updating friends list for user:', data.userId);
+      // Update friends list if the updated user is in the friends list
+      setFriends(prevFriends => {
+        const updatedFriends = prevFriends.map(friend => {
+          if (friend.friendid === data.userId) {
+            console.log('Updating friend:', friend.friendusername, 'with new data:', data);
+            return { ...friend, friendusername: data.username, friendprofilepicture: data.profilePicture };
+          }
+          return friend;
+        });
+        console.log('Updated friends list:', updatedFriends);
+        return updatedFriends;
+      });
+    };
+
+    const handleFriendProfileUpdate = (data) => {
+      console.log('Friend profile updated:', data);
+      console.log('Current friends before update:', friends);
+      
+      // Update friends list with the updated friend data
+      setFriends(prevFriends => {
+        const updatedFriends = prevFriends.map(friend => 
+          friend.friendid === data.friendId 
+            ? { ...friend, friendusername: data.username, friendprofilepicture: data.profilePicture }
+            : friend
+        );
+        console.log('Updated friends after profile change:', updatedFriends);
+        return updatedFriends;
+      });
+      
+      // Also update groups list if the user is in any groups
+      setGroups(prevGroups => 
+        prevGroups.map(group => ({
+          ...group,
+          members: group.members.map(member => 
+            member._id === data.friendId 
+              ? { ...member, username: data.username, profilePicture: data.profilePicture }
+              : member
+          )
+        }))
+      );
+    };
+
+    if (socket) {
+      console.log('Setting up profile update listeners');
+      socket.on('profile_updated', handleProfileUpdate);
+      socket.on('friend_profile_updated', handleFriendProfileUpdate);
+      
+      // Add debugging for all socket events
+      socket.onAny((eventName, ...args) => {
+        if (eventName === 'profile_updated' || eventName === 'friend_profile_updated') {
+          console.log(`Socket event received: ${eventName}`, args);
+        }
+      });
+      
+      return () => {
+        socket.off('profile_updated', handleProfileUpdate);
+        socket.off('friend_profile_updated', handleFriendProfileUpdate);
+      };
+    }
+  }, [socket]);
   const [messages, setMessages] = useState([]);
   const [content, setContent] = useState("");
   const searchParams = useSearchParams();
   const receiverId = useRef();
   const [enableSend, setEnableSend] = useState(false);
   const bottomRef = useRef();
-  const [showEmojiPicker,setShowEmojiPicker] = useState("")
+  const [showEmojiPicker,setShowEmojiPicker] = useState(false)
   const [searchValue,setSearchValue] = useState("")
   const [filteredFriends,setFilteredFriends] = useState([])
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -129,6 +225,21 @@ export default function WhatsAppUI() {
     const file = e.target.files?.[0]
     if (!file) return
     
+    // Check if file is image or video only
+    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+      toast.error("Only images and videos can be sent. Contact developer to enable more features.", {
+        position: "top-right",
+        autoClose: 4000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
+      });
+      // Clear the file input
+      e.target.value = '';
+      return;
+    }
+    
     // Clean up previous preview URL if exists
     if (pendingAttachment?.url) {
       URL.revokeObjectURL(pendingAttachment.url)
@@ -158,7 +269,7 @@ export default function WhatsAppUI() {
       setUploadProgress(0)
       
       // Create abort controller for cancellation
-      uploadAbortController.current = new AbortController()
+      uploadAbortController.current = { controller: new AbortController(), xhr: null }
       
       // Determine resource type based on file type
       const fileType = file.type.toLowerCase()
@@ -203,10 +314,10 @@ export default function WhatsAppUI() {
       } else {
         // For images/videos, use signed upload
         const { apiKey, timestamp, signature, folder } = signatureData
-        form.append('api_key', apiKey)
-        form.append('timestamp', timestamp)
-        form.append('signature', signature)
-        form.append('folder', folder)
+      form.append('api_key', apiKey)
+      form.append('timestamp', timestamp)
+      form.append('signature', signature)
+      form.append('folder', folder)
       }
 
       console.log('Upload parameters:', {
@@ -221,6 +332,12 @@ export default function WhatsAppUI() {
 
       const xhr = new XMLHttpRequest()
       const url = `https://api.cloudinary.com/v1_1/${cloudName}/${responseResourceType}/upload`
+      
+      // Store xhr reference for cancellation BEFORE starting the request
+      if (uploadAbortController.current) {
+        uploadAbortController.current.xhr = xhr
+      }
+      
       const promise = new Promise((resolve, reject) => {
         xhr.open('POST', url)
         xhr.upload.onprogress = (e) => {
@@ -238,9 +355,6 @@ export default function WhatsAppUI() {
         xhr.onerror = () => reject(new Error('Upload error'))
         xhr.onabort = () => reject(new Error('Upload cancelled'))
         xhr.send(form)
-        
-        // Store xhr reference for cancellation
-        uploadAbortController.current.xhr = xhr
       })
       const result = await promise
       
@@ -262,7 +376,7 @@ export default function WhatsAppUI() {
     } catch (err) {
       // Don't show error toast for cancelled uploads
       if (err.message !== 'Upload cancelled') {
-        toast.error('Upload failed')
+      toast.error('Upload failed')
       }
       throw err
     } finally {
@@ -274,7 +388,7 @@ export default function WhatsAppUI() {
   }
 
   const sendMessageWithAttachment = async () => {
-    if (!pendingAttachment || !receiverId.current || !session?.user?._id) return
+    if (!pendingAttachment || !receiverId.current || !sessionData?.user?._id) return
     
     try {
       const attachment = await uploadFileToCloudinary(pendingAttachment.file)
@@ -300,7 +414,7 @@ export default function WhatsAppUI() {
     } catch (err) {
       // Don't log error for cancelled uploads
       if (err.message !== 'Upload cancelled') {
-        console.error('Failed to send message with attachment:', err)
+      console.error('Failed to send message with attachment:', err)
       }
     }
   }
@@ -323,7 +437,7 @@ export default function WhatsAppUI() {
   }
 
   const sendGroupMessageWithAttachment = async (groupId) => {
-    if (!pendingAttachment || !session?.user?._id) return
+    if (!pendingAttachment || !sessionData?.user?._id) return
     
     try {
       const attachment = await uploadFileToCloudinary(pendingAttachment.file)
@@ -719,97 +833,114 @@ export default function WhatsAppUI() {
     }
   }
   const notificationRef = useRef(null)
+  const emojiPickerRef = useRef(null)
+  const profileFileInputRef = useRef(null)
+
+  const handleProfilePictureChange = (e) => {
+    const file = e.target.files[0]
+    if (file) {
+      setProfilePicture(file)
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        setProfilePicturePreview(e.target.result)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const removeProfilePicture = () => {
+    setProfilePicture(null)
+    setProfilePicturePreview(null)
+    if (profileFileInputRef.current) {
+      profileFileInputRef.current.value = ''
+    }
+  }
+
+  const updateProfile = async () => {
+    try {
+      setIsUpdatingProfile(true)
+      
+      const formData = new FormData()
+      formData.append('username', editableUsername)
+      if (profilePicture) {
+        formData.append('profilePicture', profilePicture)
+      } else if (profilePicturePreview === null && sessionData?.user?.profilePicture) {
+        // If user removed the profile picture
+        formData.append('removeProfilePicture', 'true')
+      }
+      
+      const response = await axios.put('/api/update-profile', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      })
+      
+      if (response.data.success) {
+        toast.success('Profile updated successfully!')
+        setShowProfileModal(false)
+        setProfilePicture(null)
+        setProfilePicturePreview(null)
+        
+        // Refresh the session with updated data
+        try {
+          const sessionResponse = await axios.post('/api/refresh-session')
+          if (sessionResponse.data.success) {
+            // Update the session data in the client
+            const updatedUserData = sessionResponse.data.data
+            
+            // Update the session using NextAuth's update method
+            await update({
+              user: updatedUserData
+            })
+          }
+        } catch (sessionError) {
+          console.error('Error refreshing session:', sessionError)
+          // Fallback to page refresh if session update fails
+          window.location.reload()
+        }
+      } else {
+        toast.error(response.data.message || 'Failed to update profile')
+      }
+    } catch (error) {
+      console.error('Error updating profile:', error)
+      toast.error(error.response?.data?.message || 'Failed to update profile')
+    } finally {
+      setIsUpdatingProfile(false)
+    }
+  }
+
+  // Initialize editable username when modal opens
+  useEffect(() => {
+    if (showProfileModal && sessionData?.user?.username) {
+      setEditableUsername(sessionData.user.username)
+    } else if (!showProfileModal) {
+      // Reset state when modal closes
+      setProfilePicture(null)
+      setProfilePicturePreview(null)
+      setEditableUsername('')
+    }
+  }, [showProfileModal, sessionData?.user?.username])
 
   
   const ChatLoader = () => (
   <div className="flex items-center justify-center h-full">
     <div className="flex flex-col items-center space-y-4">
       <div className="relative">
-        <div className="w-12 h-12 border-4 border-green-200 border-t-green-500 rounded-full animate-spin"></div>
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-500 rounded-full animate-spin"></div>
         <div className="absolute inset-0 flex items-center justify-center">
-          <MessageCircle size={20} className="text-green-500" />
+          <MessageCircle size={20} className="text-blue-500" />
         </div>
       </div>
       <div className="flex space-x-1">
-        <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-        <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-        <div className="w-2 h-2 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
       </div>
       <p className="text-sm text-gray-600 font-medium">Loading chat...</p>
     </div>
   </div>
 );
 
-const FullUILoader = () => (
-  <div className="flex h-screen bg-gray-100">
-    {/* Left sidebar skeleton */}
-    <div className="w-1/3 flex flex-col border-r border-gray-300 bg-white">
-      <div className="flex justify-between items-center p-4 bg-gray-200">
-        <div className="w-10 h-10 rounded-full bg-gray-300 animate-pulse"></div>
-        <div className="flex items-center space-x-4">
-          <div className="w-5 h-5 rounded bg-gray-300 animate-pulse"></div>
-          <div className="w-5 h-5 rounded bg-gray-300 animate-pulse"></div>
-          <div className="w-5 h-5 rounded bg-gray-300 animate-pulse"></div>
-          <div className="w-5 h-5 rounded bg-gray-300 animate-pulse"></div>
-        </div>
-      </div>
-      
-      <div className="p-2 bg-gray-100">
-        <div className="bg-gray-300 rounded-lg h-10 animate-pulse"></div>
-      </div>
-      
-      <div className="flex-1 overflow-y-auto">
-        {[...Array(8)].map((_, i) => (
-          <div key={i} className="flex items-center px-3 py-3 border-b border-gray-200">
-            <div className="w-10 h-10 rounded-full bg-gray-300 animate-pulse mr-3"></div>
-            <div className="flex-1">
-              <div className="h-4 bg-gray-300 rounded animate-pulse mb-2"></div>
-              <div className="h-3 bg-gray-200 rounded animate-pulse w-3/4"></div>
-            </div>
-          </div>
-        ))}
-      </div>
-      
-      <div className="border-t border-gray-300 p-3 bg-gray-200">
-        <div className="h-10 bg-gray-300 rounded animate-pulse mb-2"></div>
-        <div className="h-10 bg-gray-300 rounded animate-pulse"></div>
-      </div>
-    </div>
-
-    {/* Right chat area */}
-    <div className="w-2/3 flex flex-col">
-      <div className="flex-1 flex flex-col items-center justify-center bg-gray-100">
-        <div className="flex flex-col items-center space-y-6">
-          {/* Main loader animation */}
-          <div className="relative">
-            <div className="w-20 h-20 border-4 border-green-200 border-t-green-500 rounded-full animate-spin"></div>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <MessageCircle size={32} className="text-green-500" />
-            </div>
-          </div>
-          
-          {/* Bouncing dots */}
-          <div className="flex space-x-2">
-            <div className="w-3 h-3 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-            <div className="w-3 h-3 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-            <div className="w-3 h-3 bg-green-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-          </div>
-          
-          {/* Loading text */}
-          <div className="text-center">
-            <h2 className="text-xl font-medium text-gray-700 mb-2">WhatsApp Web</h2>
-            <p className="text-sm text-gray-500">Loading your conversations...</p>
-          </div>
-          
-          {/* Progress bar */}
-          <div className="w-64 h-2 bg-gray-200 rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-green-400 to-green-600 rounded-full animate-pulse"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-);
 
  const form = useForm({
     resolver: zodResolver(messageSchema),
@@ -953,7 +1084,7 @@ const FullUILoader = () => (
 
   // Handle status changes separately to avoid clearing message counts
   useEffect(() => {
-    if (!session?.user?._id) return;
+    if (!sessionData?.user?._id) return;
 
     const handleOnlineStatus = ({ userId }) => {
       console.log("receiverId.current is : ",receiverId.current)
@@ -1024,11 +1155,11 @@ const FullUILoader = () => (
       socket.off("user_came_online", handleUserCameOnline);
       socket.off("user_went_offline", handleUserWentOffline);
     };
-  }, [session?.user?._id, receiverId.current]);
+  }, [sessionData?.user?._id, receiverId.current]);
 
   // Handle session changes - only reset counts when session is completely lost
   useEffect(() => {
-    if (!session?.user?._id) {
+    if (!sessionData?.user?._id) {
       console.log("Session lost, resetting message counts");
       setNewMessageCounts({});
       setTotalNewMessages(0);
@@ -1039,10 +1170,10 @@ const FullUILoader = () => (
         sessionStorage.removeItem('totalNewMessages');
       }
     }
-  }, [session?.user?._id]);
+  }, [sessionData?.user?._id]);
 
   useEffect(() => {
-    if (!session?.user?._id) return;
+    if (!sessionData?.user?._id) return;
 
     // Prevent duplicate listener registration
     if (socketListenersRegistered.current) {
@@ -1061,21 +1192,21 @@ const FullUILoader = () => (
       console.log("🔍 RECEIVED MESSAGE:", {
         messageSender: message.senderid,
         messageReceiver: message.receiverid,
-        currentUser: session?.user?._id,
+        currentUser: sessionData?.user?._id,
         activeChat: receiverId.current,
         shouldShow: receiverId.current && (
-          (message.senderid === receiverId.current && message.receiverid === session?.user?._id) ||
-          (message.receiverid === receiverId.current && message.senderid === session?.user?._id)
+          (message.senderid === receiverId.current && message.receiverid === sessionData?.user?._id) ||
+          (message.receiverid === receiverId.current && message.senderid === sessionData?.user?._id)
         )
       });
       
       // Only add message if it's for the currently active chat
       if (receiverId.current && (
-        (message.senderid === receiverId.current && message.receiverid === session?.user?._id) ||
-        (message.receiverid === receiverId.current && message.senderid === session?.user?._id)
+        (message.senderid === receiverId.current && message.receiverid === sessionData?.user?._id) ||
+        (message.receiverid === receiverId.current && message.senderid === sessionData?.user?._id)
       )) {
         console.log("✅ ADDING MESSAGE TO CHAT");
-        setMessages((prev) => [...prev, message]);
+      setMessages((prev) => [...prev, message]);
       } else {
         console.log("❌ IGNORING MESSAGE - NOT FOR CURRENT CHAT");
       }
@@ -1087,7 +1218,7 @@ const FullUILoader = () => (
       socket.off("send_message_to_receiver");
       socketListenersRegistered.current = false;
     };
-  }, [session?.user?._id]);
+  }, [sessionData?.user?._id]);
 
  useEffect(() => {
   if (bottomRef.current) {
@@ -1099,7 +1230,7 @@ const FullUILoader = () => (
 }, [messages]);
 
   const onSubmit = async (data) => {
-    if (receiverId.current && session?.user?._id) {
+    if (receiverId.current && sessionData?.user?._id) {
       // Handle group messages
       if (receiverId.current.startsWith('group_')) {
         const groupId = receiverId.current.replace('group_', '');
@@ -1128,7 +1259,7 @@ const FullUILoader = () => (
 
   // Handle new messages with proper cleanup
   useEffect(() => {
-    if (!session?.user?._id) return;
+    if (!sessionData?.user?._id) return;
 
     console.log("🔔 Setting up new_message listener");
 
@@ -1139,7 +1270,7 @@ const FullUILoader = () => (
       console.log("🔔 === NEW MESSAGE NOTIFICATION DEBUG ===");
       console.log("🔔 New message received:", { content, receiverId, senderId, messageId });
       console.log("🔔 Current activeChat:", activeChat);
-      console.log("🔔 Current session user:", session?.user?._id);
+      console.log("🔔 Current session user:", sessionData?.user?._id);
       console.log("🔔 Is group message:", senderId.startsWith('group_'));
       console.log("🔔 Processed messages count:", processedMessages.size);
       console.log("🔔 Already processed?", processedMessages.has(messageId));
@@ -1168,7 +1299,7 @@ const FullUILoader = () => (
       }
 
       // Only process if the message is for the current user
-      if (receiverId === session?.user?._id) {
+      if (receiverId === sessionData?.user?._id) {
         // Prevent duplicate processing
         if (processingNotification.current) {
           console.log("🔔 Notification already being processed, skipping...");
@@ -1181,29 +1312,29 @@ const FullUILoader = () => (
         setProcessedMessages(prev => new Set([...prev, messageId]));
         
         // Handle notifications for both group and direct messages
-        setTimeout(() => {
-          setNewMessageCounts(prev => {
+            setTimeout(() => {
+              setNewMessageCounts(prev => {
             const isGroup = senderId.startsWith('group_');
             const chatKey = isGroup ? senderId : senderId;
             
             console.log("🔔 Incrementing notification count for:", chatKey, "Previous count:", prev[chatKey] || 0);
-            const newCounts = {
-              ...prev,
+                const newCounts = {
+                  ...prev,
               [chatKey]: (prev[chatKey] || 0) + 1
-            };
-            
-            // Update total count
-            const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
-            setTotalNewMessages(total);
-            
+                };
+                
+                // Update total count
+                const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
+                setTotalNewMessages(total);
+                
             console.log("🔔 New count for", chatKey, ":", newCounts[chatKey], "Total:", total);
             
             // Reset processing flag
             processingNotification.current = false;
-            
-            return newCounts;
-          });
-        }, 50);
+                
+                return newCounts;
+              });
+            }, 50);
       }
     };
 
@@ -1216,7 +1347,7 @@ const FullUILoader = () => (
     return () => {
       socket.off("new_message", handleNewMessage);
     };
-  }, [session?.user?._id]); // Remove activeChat dependency to prevent re-registration
+  }, [sessionData?.user?._id]); // Remove activeChat dependency to prevent re-registration
 
 
   // This is already handled in the main session useEffect above
@@ -1240,9 +1371,9 @@ const FullUILoader = () => (
     console.log("Total new messages:", totalNewMessages);
     console.log("Processed messages count:", processedMessages.size);
     console.log("Active chat:", activeChat);
-    console.log("Session user:", session?.user?._id);
+    console.log("Session user:", sessionData?.user?._id);
     console.log("===========================");
-  }, [newMessageCounts, totalNewMessages, processedMessages, activeChat, session?.user?._id])
+  }, [newMessageCounts, totalNewMessages, processedMessages, activeChat, sessionData?.user?._id])
 
   const onClick = async (id) => {
     if (id) {
@@ -1286,7 +1417,7 @@ const FullUILoader = () => (
       } else {
         // Handle direct messages
         socket.emit("all_messages", {
-          senderId: session?.user?._id,
+          senderId: sessionData?.user?._id,
           receiverId: id,
         });
         socket.once("receive_messages", (msgs) => {
@@ -1309,7 +1440,7 @@ const FullUILoader = () => (
   };
 
   useEffect(() => {
-  if (!session?.user?._id) return;
+  if (!sessionData?.user?._id) return;
 
   // Call functionality removed
 }, [session]);
@@ -1332,7 +1463,7 @@ const FullUILoader = () => (
 
   useEffect(() => {
     // console.log("receiverId.current : ",receiverId.current)
-    // console.log("session.user._id : ",session?.user?._id)
+    // console.log("session.user._id : ",sessionData?.user?._id)
       socket.on("deleted",({id}) => {
         setMessages((prev) => prev.map((msg) => msg._id == id ? {...msg,content : "Message Deleted"} : msg))
       })
@@ -1408,7 +1539,7 @@ useEffect(() => {
       {
       try {
         const response = await axios.post("/api/suggest-message",{
-          senderId : session?.user?._id,
+          senderId : sessionData?.user?._id,
           receiverId : receiverId.current
         })
          console.log("response.data is : ",response.data.data)
@@ -1523,9 +1654,9 @@ useEffect(() => {
   // Clear all messages for current chat
   const clearAllMessages = async () => {
     try {
-      if (receiverId.current && session?.user?._id) {
+      if (receiverId.current && sessionData?.user?._id) {
         const response = await axios.post("/api/clear-messages", {
-          senderId: session?.user?._id,
+          senderId: sessionData?.user?._id,
           receiverId: receiverId.current
         });
         
@@ -1545,7 +1676,7 @@ useEffect(() => {
   // User-friendly export chat functionality
   const exportChat = () => {
     const friendInfo = friends.find(f => f.friendid === receiverId.current);
-    const currentUser = session?.user;
+    const currentUser = sessionData?.user;
     
     // Group messages by date
     const messagesByDate = messages.reduce((acc, msg) => {
@@ -1570,7 +1701,7 @@ useEffect(() => {
       conversation: Object.entries(messagesByDate).map(([date, msgs]) => ({
         date: date,
         messages: msgs.map(msg => {
-          const isYou = msg.senderid === session?.user?._id;
+          const isYou = msg.senderid === sessionData?.user?._id;
           const senderName = isYou ? 'You' : (friendInfo?.friendusername || 'Friend');
           const time = new Date(msg.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           
@@ -1646,6 +1777,23 @@ useEffect(() => {
     }
   }, [])
 
+  // Handle click outside emoji picker
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target)) {
+        setShowEmojiPicker(false)
+      }
+    }
+
+    if (showEmojiPicker) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showEmojiPicker])
+
   // Load groups and notifications once session is ready
   useEffect(() => {
     const loadGroups = async () => {
@@ -1689,11 +1837,11 @@ useEffect(() => {
       }
     }
     
-    if (session?.user?._id) {
+    if (sessionData?.user?._id) {
       loadGroups()
       loadNotifications()
     }
-  }, [session?.user?._id])
+  }, [sessionData?.user?._id])
 
   // Load mute state when chat changes
   useEffect(() => {
@@ -1706,7 +1854,7 @@ useEffect(() => {
 
   // Listen for real-time group additions
   useEffect(() => {
-    if (!session?.user?._id) return
+    if (!sessionData?.user?._id) return
     const onGroupAdded = (data) => {
       // Add the group to the groups list if it's not already there
       setGroups((prev) => {
@@ -1748,11 +1896,11 @@ useEffect(() => {
     return () => {
       socket.off('group_added', onGroupAdded)
     }
-  }, [session?.user?._id])
+  }, [sessionData?.user?._id])
 
   // Listen for group creation and updates
   useEffect(() => {
-    if (!session?.user?._id) return
+    if (!sessionData?.user?._id) return
     const onGroupCreated = (group) => {
       setGroups((prev) => {
         const newGroups = [group, ...prev]
@@ -1860,11 +2008,11 @@ useEffect(() => {
       socket.off('group_deleted', onGroupDeleted)
       socket.off('group_member_left', onGroupLeft)
     }
-  }, [session?.user?._id])
+  }, [sessionData?.user?._id])
 
   // Listen for group messages
   useEffect(() => {
-    if (!session?.user?._id) return
+    if (!sessionData?.user?._id) return
     const onGroupMessage = (data) => {
       // Only add message if it's for the current active group
       if (activeChat === `group_${data.groupId}`) {
@@ -1878,12 +2026,12 @@ useEffect(() => {
     return () => {
       socket.off('group_message_received', onGroupMessage)
     }
-  }, [session?.user?._id, activeChat])
+  }, [sessionData?.user?._id, activeChat])
 
   // Fetch friend requests
   const fetchFriendRequests = async () => {
     try {
-      console.log("Fetching friend requests for user:", session?.user?._id)
+      console.log("Fetching friend requests for user:", sessionData?.user?._id)
       const response = await axios.get("/api/get-friend-requests")
       console.log("Friend requests API response:", response.data)
       
@@ -1916,7 +2064,7 @@ useEffect(() => {
         if (action === 'accept') {
           toast.success("Friend request accepted!")
           // Refresh friends list
-          if (session?.user?._id) {
+          if (sessionData?.user?._id) {
             socket.emit("get_friends", session.user._id)
           }
         } else {
@@ -1931,14 +2079,14 @@ useEffect(() => {
 
   // Fetch friend requests when component mounts
   useEffect(() => {
-    if (session?.user?._id) {
+    if (sessionData?.user?._id) {
       fetchFriendRequests()
     }
-  }, [session?.user?._id])
+  }, [sessionData?.user?._id])
 
   // Periodic refresh of friend requests (fallback for socket notifications)
   useEffect(() => {
-    if (!session?.user?._id) return
+    if (!sessionData?.user?._id) return
 
     const interval = setInterval(() => {
       console.log("Periodic friend request refresh")
@@ -1946,11 +2094,11 @@ useEffect(() => {
     }, 10000) // Check every 10 seconds
 
     return () => clearInterval(interval)
-  }, [session?.user?._id])
+  }, [sessionData?.user?._id])
 
   // Periodic refresh of groups (fallback for socket notifications)
   useEffect(() => {
-    if (!session?.user?._id) return
+    if (!sessionData?.user?._id) return
 
     const interval = setInterval(async () => {
       console.log("Periodic groups and notifications refresh")
@@ -1991,12 +2139,12 @@ useEffect(() => {
     }, 15000) // Check every 15 seconds
 
     return () => clearInterval(interval)
-  }, [session?.user?._id])
+  }, [sessionData?.user?._id])
 
 
   // Listen for friend request notifications
   useEffect(() => {
-    if (!session?.user?._id) return
+    if (!sessionData?.user?._id) return
 
     console.log("Setting up friend request listener for user:", session.user._id)
 
@@ -2079,7 +2227,7 @@ useEffect(() => {
       }, 3000) // Increased to 3 seconds
       
       // If accepted, refresh friends list
-      if (data.status === 'accepted' && session?.user?._id) {
+      if (data.status === 'accepted' && sessionData?.user?._id) {
         socket.emit("get_friends", session.user._id)
         // Refresh users list in add friend modal if it's open
         if (showAddFriendModal) {
@@ -2146,7 +2294,7 @@ useEffect(() => {
       socket.off("friend_block_notification")
       socket.offAny()
     }
-  }, [session?.user?._id])
+  }, [sessionData?.user?._id])
 
   // Bridge notifications from global provider (in case user is on pages without UI component mounted)
   useEffect(() => {
@@ -2190,7 +2338,7 @@ useEffect(() => {
   return (
   <>
     {isInitialLoading ? (
-      <FullUILoader />
+      <ChatlyLoader message="Loading your conversations..." />
     ) : (
       <>
         <div className="flex h-screen bg-gray-100 overflow-hidden ">
@@ -2198,9 +2346,13 @@ useEffect(() => {
             <div className="flex justify-between items-center p-4 bg-gray-200">
               <div className="flex items-center">
                 <div className="relative group">
-                  <div className="w-10 h-10 rounded-full bg-gray-400 flex items-center justify-center cursor-pointer hover:bg-gradient-to-r hover:from-pink-500 hover:to-yellow-500 transition-all duration-300">
-                    <User size={20} className="text-white" />
-                  </div>
+                  <Avatar 
+                    user={sessionData?.user} 
+                    size="md" 
+                    className="cursor-pointer hover:scale-105 transition-all duration-300"
+                    onClick={() => setShowProfileModal(true)}
+                    showUserIcon={!sessionData?.user?.profilePicture}
+                  />
                   <div className="absolute top-11 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-pink-500 to-yellow-500 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
                     <div className="font-medium">View Profile</div>
                     <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-pink-500"></div>
@@ -2640,11 +2792,14 @@ useEffect(() => {
                                 <Bot size={16} className="text-white" />
                               </div>
                             ) : (
-                              <div className="w-8 h-8 rounded-full bg-gray-400 flex items-center justify-center">
-                                <User size={16} className="text-white" />
-                              </div>
+                              <Avatar 
+                                user={{ 
+                                  username: friend.friendusername, 
+                                  profilePicture: friend.friendprofilepicture 
+                                }} 
+                                size="sm" 
+                              />
                             )}
-                            
                           </div>
                           <div className="flex flex-col">
                             <span className={`text-sm ${
@@ -2917,6 +3072,57 @@ useEffect(() => {
                           <>
                             {/* Call functionality removed */}
 
+                            {/* Video and Voice Call Buttons - Only for friend chat */}
+                            {!receiverId.current?.startsWith('group_') && (
+                              <>
+                                {/* Voice Call Button */}
+                            <div className="relative group">
+                                  <button
+                                    onClick={() => {
+                                      toast.info("This feature is unavailable. Contact developer to enable it.", {
+                                        position: "top-right",
+                                        autoClose: 3000,
+                                        hideProgressBar: false,
+                                        closeOnClick: true,
+                                        pauseOnHover: true,
+                                        draggable: true,
+                                      });
+                                    }}
+                                    className="p-2 rounded-full transition-all duration-200 bg-blue-100 text-blue-700 hover:bg-blue-200"
+                                  >
+                                    <Phone className="w-4 h-4" />
+                                  </button>
+                                  <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-500 to-blue-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                    <div className="font-medium">Voice Call</div>
+                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-blue-500"></div>
+                              </div>
+                            </div>
+
+                                {/* Video Call Button */}
+                            <div className="relative group">
+                                  <button
+                                    onClick={() => {
+                                      toast.info("This feature is unavailable. Contact developer to enable it.", {
+                                        position: "top-right",
+                                        autoClose: 3000,
+                                        hideProgressBar: false,
+                                        closeOnClick: true,
+                                        pauseOnHover: true,
+                                        draggable: true,
+                                      });
+                                    }}
+                                    className="p-2 rounded-full transition-all duration-200 bg-purple-100 text-purple-700 hover:bg-purple-200"
+                                  >
+                                    <Video className="w-4 h-4" />
+                                  </button>
+                                  <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-purple-500 to-purple-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                                    <div className="font-medium">Video Call</div>
+                                    <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-purple-500"></div>
+                              </div>
+                            </div>
+                              </>
+                            )}
+
                             {/* Block/Unblock Button */}
                             <div className="relative group">
                               <button
@@ -3051,7 +3257,7 @@ useEffect(() => {
                           {receiverId.current?.startsWith('group_') && (() => {
                             const groupId = receiverId.current.replace('group_', '');
                             const currentGroup = groups.find(g => g._id === groupId);
-                            const isGroupOwner = currentGroup?.ownerId?.toString() === session?.user?._id;
+                            const isGroupOwner = currentGroup?.ownerId?.toString() === sessionData?.user?._id;
                             
                             if (isGroupOwner) {
                               // Group Owner - Show Delete Group option
@@ -3218,11 +3424,11 @@ useEffect(() => {
                         <div
                           key={index}
                           data-message-id={message._id}
-                          className={`flex ${message.senderid == session?.user?._id ? 'justify-end' : 'justify-start'} ${message.content == "Message Deleted" ? "mr-15" : ""}`}
+                          className={`flex ${message.senderid == sessionData?.user?._id ? 'justify-end' : 'justify-start'} ${message.content == "Message Deleted" ? "mr-15" : ""}`}
                         >
                           <div className="flex items-center group">
                             {/* Copy button for receiver messages (left side) - only for text messages */}
-                            {message.senderid !== session?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
+                            {message.senderid !== sessionData?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
                               <div className="mr-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                                 <button 
                                   onClick={() => copyMessage(message)}
@@ -3239,7 +3445,7 @@ useEffect(() => {
 
                             <div
                               className={`max-w-xs lg:max-w-md px-3 py-2 rounded-lg shadow-sm ${
-                                message.senderid === session?.user?._id
+                                message.senderid === sessionData?.user?._id
                                   ? 'bg-green-100 rounded-tr-none'
                                   : 'bg-white rounded-tl-none'
                               } ${message.content == "Message Deleted" ? "bg-red-300 rounded-tr-none pointer-events-none opacity-50" : ""}`}
@@ -3421,7 +3627,7 @@ useEffect(() => {
                                               <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
                                             </svg>
                                           </button>
-                                          {message.senderid === session?.user?._id && (
+                                          {message.senderid === sessionData?.user?._id && (
                                             <button
                                               onClick={(e) => {
                                                 e.stopPropagation()
@@ -3518,7 +3724,7 @@ useEffect(() => {
                                               <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
                                             </svg>
                                           </button>
-                                          {message.senderid === session?.user?._id && (
+                                          {message.senderid === sessionData?.user?._id && (
                                             <button
                                               onClick={(e) => {
                                                 e.stopPropagation()
@@ -3632,7 +3838,7 @@ useEffect(() => {
                             </div>
                             
                             {/* Copy and Delete buttons for sender messages (right side) - only for text messages */}
-                            {message.senderid === session?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
+                            {message.senderid === sessionData?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
                               <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-row space-x-1 items-center">
                                 <button 
                                   onClick={() => copyMessage(message)}
@@ -3672,12 +3878,12 @@ useEffect(() => {
                     onClick={() => setShowEmojiPicker((prev) => !prev)} 
                   />
                   {showEmojiPicker && (
-                    <div className="absolute bottom-10 left-0 z-10">
+                    <div ref={emojiPickerRef} className="absolute bottom-16 left-1/3 z-20">
                       <Picker data={data} onEmojiSelect={addEmoji} />
                     </div>
                   )}
                   <div className="relative">
-                    <button type="button" onClick={() => openFilePicker('*')}>
+                    <button type="button" onClick={() => openFilePicker('image/*,video/*')}>
                       <Paperclip size={24} className="text-gray-600 cursor-pointer hover:text-blue-500 transition-colors duration-200" />
                     </button>
                   </div>
@@ -3694,8 +3900,10 @@ useEffect(() => {
                         <button
                           type="button"
                           onClick={() => {
+                            console.log('Cancel upload button clicked...')
                             // Cancel the upload
                             if (uploadAbortController.current?.xhr) {
+                              console.log('Aborting upload...')
                               uploadAbortController.current.xhr.abort()
                             }
                             setIsUploading(false)
@@ -3710,8 +3918,9 @@ useEffect(() => {
                             if (fileInputRef.current) {
                               fileInputRef.current.value = ''
                             }
+                            console.log('Upload cancelled successfully')
                           }}
-                          className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1 rounded-full transition-colors duration-200"
+                          className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-full transition-colors duration-200 border border-red-200 hover:border-red-300"
                           title="Cancel upload"
                         >
                           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
@@ -3727,87 +3936,106 @@ useEffect(() => {
                     <FormProvider {...form}>
                       <form onSubmit={form.handleSubmit(onSubmit)} className="flex items-center space-x-2">
                         {/* Show preview inside input field */}
-                        {pendingAttachment && !isUploading && (
-                          <div className="flex items-center space-x-3 mr-3 bg-gray-50 rounded-lg p-2 border">
-                            {pendingAttachment.isImage && (
-                              <img 
-                                src={pendingAttachment.url} 
-                                alt="Preview" 
-                                className="w-12 h-12 object-cover rounded border"
-                              />
-                            )}
-                            {pendingAttachment.isVideo && (
-                              <div className="relative w-12 h-12 rounded overflow-hidden bg-gray-200 border">
-                                <video 
-                                  src={pendingAttachment.url} 
-                                  className="w-full h-full object-cover"
-                                  controls={false}
-                                  muted
-                                  preload="metadata"
-                                  onLoadedMetadata={(e) => {
-                                    e.target.currentTime = 1
-                                  }}
-                                  onSeeked={(e) => {
-                                    const canvas = document.createElement('canvas')
-                                    const ctx = canvas.getContext('2d')
-                                    canvas.width = e.target.videoWidth
-                                    canvas.height = e.target.videoHeight
-                                    ctx.drawImage(e.target, 0, 0, canvas.width, canvas.height)
-                                    const thumbnailUrl = canvas.toDataURL('image/jpeg', 0.8)
-                                    e.target.poster = thumbnailUrl
-                                    e.target.currentTime = 0
-                                    e.target.pause()
-                                  }}
-                                />
-                                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30">
-                                  <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M8 5v14l11-7z"/>
-                                  </svg>
+                  {pendingAttachment && !isUploading && (
+                          <div className="relative flex items-center space-x-3 mr-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg px-3 py-2 border border-blue-200 shadow-sm">
+                            {/* Thumbnail */}
+                            <div className="relative flex-shrink-0">
+                        {pendingAttachment.isImage && (
+                                <div className="w-10 h-10 rounded-lg overflow-hidden shadow-sm border border-white">
+                          <img 
+                            src={pendingAttachment.url} 
+                            alt="Preview" 
+                                    className="w-full h-full object-cover"
+                          />
                                 </div>
-                              </div>
-                            )}
-                            {pendingAttachment.isAudio && (
-                              <div className="w-12 h-12 bg-purple-100 rounded flex items-center justify-center border">
-                                <svg className="w-6 h-6 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
-                                  <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
-                                </svg>
-                              </div>
-                            )}
-                            {pendingAttachment.isDocument && (
-                              <div className="w-12 h-12 bg-blue-100 rounded flex items-center justify-center border">
-                                <svg className="w-6 h-6 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
-                                  <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-                                </svg>
-                              </div>
-                            )}
-                            <div className="flex flex-col">
-                              <span className="text-sm font-medium text-gray-900 truncate max-w-24">
-                                {pendingAttachment.name}
-                              </span>
-                              <span className="text-xs text-gray-500">
-                                {(pendingAttachment.size / 1024 / 1024).toFixed(2)} MB
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (pendingAttachment?.url) {
-                                  URL.revokeObjectURL(pendingAttachment.url)
-                                }
-                                setPendingAttachment(null)
-                                if (fileInputRef.current) {
-                                  fileInputRef.current.value = ''
-                                }
-                              }}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-full transition-colors duration-200"
-                              title="Remove attachment"
-                            >
-                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                        )}
+                        {pendingAttachment.isVideo && (
+                                <div className="relative w-10 h-10 rounded-lg overflow-hidden shadow-sm border border-white bg-gradient-to-br from-purple-100 to-pink-100">
+                            <video 
+                              src={pendingAttachment.url} 
+                              className="w-full h-full object-cover"
+                              controls={false}
+                              muted
+                                    preload="metadata"
+                                    crossOrigin="anonymous"
+                                    onLoadedMetadata={(e) => {
+                                      e.target.currentTime = 1
+                                    }}
+                                    onSeeked={(e) => {
+                                      try {
+                                        const canvas = document.createElement('canvas')
+                                        const ctx = canvas.getContext('2d')
+                                        canvas.width = e.target.videoWidth
+                                        canvas.height = e.target.videoHeight
+                                        ctx.drawImage(e.target, 0, 0, canvas.width, canvas.height)
+                                        const thumbnailUrl = canvas.toDataURL('image/jpeg', 0.8)
+                                        e.target.poster = thumbnailUrl
+                                        e.target.currentTime = 0
+                                        e.target.pause()
+                                      } catch (error) {
+                                        e.target.style.display = 'block'
+                                      }
+                                    }}
+                                    onError={(e) => {
+                                      console.log('Video load error:', e)
+                                    }}
+                                    onCanPlay={(e) => {
+                                      e.target.currentTime = 1
+                                    }}
+                                  />
+                                  <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                                    <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z"/>
                               </svg>
-                            </button>
+                            </div>
                           </div>
                         )}
+                        {pendingAttachment.isAudio && (
+                                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-100 to-indigo-100 flex items-center justify-center shadow-sm border border-white">
+                                  <svg className="w-5 h-5 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                        {pendingAttachment.isDocument && (
+                                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-100 to-cyan-100 flex items-center justify-center shadow-sm border border-white">
+                                  <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                        )}
+                        </div>
+
+                            {/* File Name */}
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm font-medium text-gray-900 truncate block" title={pendingAttachment.name}>
+                                {pendingAttachment.name}
+                              </span>
+                            </div>
+
+                            {/* Cancel Button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                                console.log('Cancel button clicked, removing attachment...')
+                            if (pendingAttachment?.url) {
+                              URL.revokeObjectURL(pendingAttachment.url)
+                            }
+                            setPendingAttachment(null)
+                            if (fileInputRef.current) {
+                              fileInputRef.current.value = ''
+                            }
+                                console.log('Attachment removed successfully')
+                          }}
+                              className="w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center transition-all duration-200 hover:scale-110 flex-shrink-0"
+                              title="Remove attachment"
+                        >
+                              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                          </svg>
+                        </button>
+                    </div>
+                  )}
                         <FormField
                           control={form.control}
                           name="content"
@@ -3913,7 +4141,7 @@ useEffect(() => {
                 <div className="w-32 h-32 bg-gray-200 rounded-full flex items-center justify-center mb-4">
                   <MessageCircle size={64} className="text-gray-400" />
                 </div>
-                <h2 className="text-xl font-medium text-gray-600 mb-2">WhatsApp Web</h2>
+                <h2 className="text-xl font-medium text-gray-600 mb-2">Chatly</h2>
                 <p className="text-sm text-gray-500 text-center max-w-md">
                   Select a chat from the sidebar or click on a friend to start messaging
                 </p>
@@ -4019,7 +4247,7 @@ useEffect(() => {
                       <div className="flex justify-between items-start mb-2">
                         <div className="flex items-center space-x-2">
                           <span className="text-sm font-medium text-gray-700">
-                            {message.senderid === session?.user?._id ? 'You' : 'Friend'}
+                            {message.senderid === sessionData?.user?._id ? 'You' : 'Friend'}
                           </span>
                           <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full">
                             {new Date(message.createdAt || Date.now()).toLocaleDateString()}
@@ -4438,9 +4666,12 @@ useEffect(() => {
                   >
                     <div className="flex items-center space-x-4">
                       {/* Avatar */}
-                      <div className="w-12 h-12 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-lg shadow-lg">
-                        {user.username.charAt(0).toUpperCase()}
-                      </div>
+                      <Avatar 
+                        user={user} 
+                        size="lg" 
+                        showStatus={true} 
+                        status={userStatus[user._id] || "offline"}
+                      />
                       
                       {/* User Info */}
                       <div>
@@ -4525,6 +4756,153 @@ useEffect(() => {
                 className="px-6 py-2 bg-gradient-to-r from-gray-500 to-gray-600 text-white rounded-full hover:from-gray-600 hover:to-gray-700 transition-all duration-200 shadow-lg hover:shadow-xl"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Profile Modal */}
+    {showProfileModal && (
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowProfileModal(false)}>
+        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-100" onClick={(e) => e.stopPropagation()}>
+          {/* Modal Header */}
+          <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-t-2xl p-6 text-white">
+            <div className="flex items-center justify-between">
+              <h2 className="text-2xl font-bold">Profile Settings</h2>
+              <button
+                onClick={() => setShowProfileModal(false)}
+                className="text-white hover:text-gray-200 transition-colors"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Modal Content */}
+          <div className="p-6 space-y-6">
+            {/* Profile Picture Section */}
+            <div className="flex flex-col items-center space-y-4">
+              <div className="relative">
+                {profilePicturePreview ? (
+                  <div className="relative">
+                    <img
+                      src={profilePicturePreview}
+                      alt="Profile preview"
+                      className="w-32 h-32 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
+                    />
+                    <button
+                      onClick={removeProfilePicture}
+                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : sessionData?.user?.profilePicture ? (
+                  <div className="relative">
+                    <img
+                      src={sessionData.user.profilePicture}
+                      alt="Current profile"
+                      className="w-32 h-32 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
+                      onError={(e) => {
+                        // Fallback to initials if image fails to load
+                        e.target.style.display = 'none'
+                        e.target.nextSibling.style.display = 'flex'
+                      }}
+                    />
+                    <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg hidden">
+                      {generateAvatarInitials(sessionData?.user?.username || '')}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg">
+                    {generateAvatarInitials(sessionData?.user?.username || '')}
+                  </div>
+                )}
+              </div>
+              
+              <div className="flex flex-col items-center space-y-2">
+                <input
+                  ref={profileFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleProfilePictureChange}
+                  className="hidden"
+                  id="profile-picture-update"
+                />
+                <div className="flex space-x-2">
+                  <label
+                    htmlFor="profile-picture-update"
+                    className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg cursor-pointer hover:bg-indigo-200 transition-colors font-medium"
+                  >
+                    {profilePicture ? 'Change Picture' : 'Update Picture'}
+                  </label>
+                  {sessionData?.user?.profilePicture && (
+                    <button
+                      onClick={removeProfilePicture}
+                      className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors font-medium"
+                    >
+                      Remove Picture
+                    </button>
+                  )}
+                </div>
+                {profilePicture && (
+                  <p className="text-xs text-gray-500 text-center">
+                    {profilePicture.name}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* User Information */}
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
+                <input
+                  type="text"
+                  value={editableUsername}
+                  onChange={(e) => setEditableUsername(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                  placeholder="Enter username"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+                <input
+                  type="email"
+                  value={sessionData?.user?.email || ''}
+                  disabled
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-500 cursor-not-allowed"
+                />
+                <p className="text-xs text-gray-500 mt-1">Email cannot be changed</p>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex space-x-3 pt-4">
+              <button
+                onClick={() => setShowProfileModal(false)}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={updateProfile}
+                disabled={isUpdatingProfile}
+                className="flex-1 px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg hover:from-indigo-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isUpdatingProfile ? (
+                  <div className="flex items-center justify-center">
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
+                    Updating...
+                  </div>
+                ) : (
+                  'Update Profile'
+                )}
               </button>
             </div>
           </div>

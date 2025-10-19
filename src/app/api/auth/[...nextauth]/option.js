@@ -98,18 +98,22 @@ export const authOption = {
           const existingUser = await userModel.findOne({ email: profile.email });
 
           if (existingUser) {
-            if (existingUser.googleId) {
-              return true;
+            if (existingUser.googleid) {
+              return true; // Allow sign-in and redirect to /ui
             } else {
-              existingUser.googleId = profile.id;
+              // Link Google account to existing user
+              existingUser.googleid = profile.id;
+              existingUser.profilePicture = profile.picture;
               await existingUser.save();
-              return "/sign-in";
+              return true; // Allow sign-in and redirect to /ui
             }
           } else {
+            // Create new user with Google account
             const newUser = new userModel({
               email: profile.email,
               username: profile.name?.replace(/\s+/g, '').toLowerCase() || profile.email.split('@')[0],
               googleid: profile.id,
+              profilePicture: profile.picture,
               password: await bcrypt.hash(Math.random().toString(36).slice(-8), 10) 
             });
 
@@ -123,7 +127,7 @@ export const authOption = {
               console.error("Failed to add AI friend for Google user:", error);
             }
             
-            return "/sign-in";
+            return true; // Allow sign-in and redirect to /ui
           }
         }
         return true;
@@ -133,14 +137,49 @@ export const authOption = {
       }
     },
 
-    async jwt({ token, user, account }) {
+    async jwt({ token, user, account, trigger }) {
       // console.log("JWT callback running with user:", user ? "present" : "not present");
       
       // Only update the token when we have a user (usually on sign-in)
       if (user) {
-        token._id = user._id || user.id;
-        token.username = user.username;
-        token.email = user.email;
+        // For Google OAuth, we need to fetch the user from database to get proper MongoDB ObjectId
+        if (account?.provider === "google") {
+          try {
+            await connectDb();
+            const dbUser = await userModel.findOne({ email: user.email });
+            if (dbUser) {
+              token._id = dbUser._id.toString();
+              token.username = dbUser.username;
+              token.email = dbUser.email;
+              token.profilePicture = dbUser.profilePicture;
+            }
+          } catch (error) {
+            console.error("Error fetching user in JWT callback:", error);
+            // Fallback to user data
+            token._id = user._id || user.id;
+            token.username = user.username;
+            token.email = user.email;
+          }
+        } else {
+          token._id = user._id || user.id;
+          token.username = user.username;
+          token.email = user.email;
+        }
+      }
+      
+      // If this is a session update trigger, fetch fresh user data from database
+      if (trigger === "update" && token._id) {
+        try {
+          await connectDb();
+          const dbUser = await userModel.findById(token._id);
+          if (dbUser) {
+            token.username = dbUser.username;
+            token.email = dbUser.email;
+            token.profilePicture = dbUser.profilePicture;
+          }
+        } catch (error) {
+          console.error("Error fetching updated user data in JWT callback:", error);
+        }
       }
       
       return token;
@@ -159,6 +198,7 @@ export const authOption = {
         session.user._id = token._id;
         session.user.username = token.username;
         session.user.email = token.email;
+        session.user.profilePicture = token.profilePicture;
       }
       
       // console.log("Session created successfully:", session);

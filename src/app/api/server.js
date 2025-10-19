@@ -55,6 +55,22 @@ app.prepare().then(async () => {
   const callDataCache = new Map();
   const socketUser  = new Map();
 
+  // Function to update user data in cache
+  const updateUserCache = async (userId) => {
+    try {
+      const updatedUser = await userModel.findOne({_id: userId});
+      if (updatedUser) {
+        callDataCache.set(userId, updatedUser);
+        console.log(`Updated user cache for ${userId}:`, updatedUser);
+      }
+    } catch (error) {
+      console.error(`Error updating user cache for ${userId}:`, error);
+    }
+  };
+
+  // Export the updateUserCache function for use in API routes
+  global.updateUserCache = updateUserCache;
+
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
@@ -203,6 +219,47 @@ app.prepare().then(async () => {
         socket.emit("friend_list", friendData);
       } catch (error) {
         console.log("Error in get_friends event: ", error);
+      }
+    });
+
+    // Handle profile updates and notify all friends
+    socket.on("profile_updated", async (data) => {
+      try {
+        console.log("Profile updated for user:", data.userId);
+        console.log("Profile update data:", data);
+        
+        // Find all users who have this user as a friend (reverse relationship)
+        const reverseFriends = await friendModel.find({ friendid: data.userId });
+        console.log("Found friends to notify:", reverseFriends.length);
+        
+        // Notify each user who has this person as a friend
+        for (const friend of reverseFriends) {
+          const friendSocket = Array.from(socketUser.entries()).find(([socketId, userId]) => userId === friend.userid);
+          if (friendSocket) {
+            const [socketId] = friendSocket;
+            console.log(`Notifying friend ${friend.userid} via socket ${socketId}`);
+            io.to(socketId).emit("friend_profile_updated", {
+              friendId: data.userId,
+              username: data.username,
+              profilePicture: data.profilePicture,
+              email: data.email
+            });
+          } else {
+            console.log(`Friend ${friend.userid} is not connected`);
+          }
+        }
+        
+        // Also notify the user's own friends list
+        console.log("Notifying user's own socket");
+        socket.emit("friend_profile_updated", {
+          friendId: data.userId,
+          username: data.username,
+          profilePicture: data.profilePicture,
+          email: data.email
+        });
+        
+      } catch (error) {
+        console.log("Error in profile_updated event: ", error);
       }
     });
 

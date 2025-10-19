@@ -23,6 +23,9 @@ const userSchema = new mongoose.Schema(
         googleid : {
             type : String
         },
+        profilePicture : {
+            type : String
+        },
         message : [
             {
                 type : mongoose.Schema.Types.ObjectId,

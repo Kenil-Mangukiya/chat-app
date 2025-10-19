@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation"
 import Image from "next/image"
 import Link from "next/link"
 import { FiMail, FiLock, FiEye, FiEyeOff } from "react-icons/fi"
+import { FaGoogle } from "react-icons/fa"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -28,6 +29,7 @@ import axios from "axios"
 function SignInPage() {
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false)
   const router = useRouter()
   const {data : session,status} = useSession()
  
@@ -38,6 +40,18 @@ function SignInPage() {
       password: ""
     }
   })
+
+  const handleGoogleSignIn = async () => {
+    try {
+      setIsGoogleLoading(true)
+      await signIn("google", { callbackUrl: "/ui" })
+    } catch (error) {
+      console.error("Google sign-in error:", error)
+      toast.error("Google sign-in failed. Please try again.")
+    } finally {
+      setIsGoogleLoading(false)
+    }
+  }
 
   const onSubmit = async (data) => {
     try {
@@ -61,6 +75,9 @@ function SignInPage() {
           console.error("Failed to ensure AI friend:", error)
           // Don't show error to user, just log it
         }
+        
+        // Redirect to /ui after successful login
+        router.push("/ui")
       }
 
 
@@ -199,7 +216,19 @@ function SignInPage() {
                 </div>
               </div>
               
-              
+              <Button
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={isGoogleLoading}
+                className="w-full bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 hover:border-gray-400 py-2 px-4 rounded-lg font-medium flex items-center justify-center shadow-sm transition-all"
+              >
+                {isGoogleLoading ? (
+                  <div className="h-5 w-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mr-2"></div>
+                ) : (
+                  <FaGoogle className="text-red-500 mr-2" />
+                )}
+                Sign in with Google
+              </Button>
               
               <p className="text-center text-sm text-gray-600 mt-4">
                 Don't have an account?{" "}
