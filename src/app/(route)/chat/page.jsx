@@ -11,8 +11,7 @@ import { useSession } from "next-auth/react"
 import { useSearchParams } from "next/navigation"
 import { useEffect, useState, useRef } from "react"
 import { FormProvider, useForm } from "react-hook-form"
-import { Bell, MessageCircle, Phone, Video, PhoneOff, PhoneCall } from "lucide-react"
-import { formatCallDuration, getCallStatusText } from "@/util/store-call-history"
+import { Bell, MessageCircle } from "lucide-react"
 
 function ChatPage() {
     const { data: session, status } = useSession()
@@ -107,71 +106,7 @@ function ChatPage() {
         }
     }
 
-    // Function to render call history message
-    const renderCallMessage = (msg) => {
-        const isOwnMessage = msg.senderid === session?.user?._id;
-        const callData = msg.callData;
-        const statusText = getCallStatusText(callData.status, callData.direction, callData.callType);
-        const duration = callData.duration > 0 ? formatCallDuration(callData.duration) : null;
-        
-        // Determine icon and colors based on call type and status
-        const getCallIcon = () => {
-            if (callData.status === 'missed' || callData.status === 'declined') {
-                return callData.callType === 'voice' ? 
-                    <PhoneOff className="w-4 h-4" /> : 
-                    <Video className="w-4 h-4" />;
-            }
-            return callData.callType === 'voice' ? 
-                <Phone className="w-4 h-4" /> : 
-                <Video className="w-4 h-4" />;
-        };
-
-        const getCallColors = () => {
-            if (callData.status === 'missed' || callData.status === 'declined') {
-                return {
-                    bg: isOwnMessage ? 'bg-red-50 border-red-200' : 'bg-red-50 border-red-200',
-                    text: 'text-red-700',
-                    icon: 'text-red-500'
-                };
-            }
-            return {
-                bg: isOwnMessage ? 'bg-green-50 border-green-200' : 'bg-green-50 border-green-200',
-                text: 'text-green-700',
-                icon: 'text-green-500'
-            };
-        };
-
-        const colors = getCallColors();
-
-        return (
-            <div className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} mb-3`}>
-                <div className={`max-w-xs px-4 py-3 rounded-2xl border ${colors.bg} ${colors.text} shadow-sm`}>
-                    <div className="flex items-center space-x-3">
-                        <div className={`${colors.icon}`}>
-                            {getCallIcon()}
-                        </div>
-                        <div className="flex-1">
-                            <div className="font-medium text-sm flex items-center gap-2">
-                                <span>{statusText}</span>
-                                {duration && (
-                                  <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-white/60">
-                                    <PhoneCall className="w-3 h-3 opacity-80" />
-                                    {duration}
-                                  </span>
-                                )}
-                            </div>
-                            <div className="text-xs opacity-60 mt-1">
-                                {new Date(msg.createdAt).toLocaleTimeString([], { 
-                                    hour: '2-digit', 
-                                    minute: '2-digit' 
-                                })}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    };
+    // Call functionality removed
 
     // Function to render regular text message
     const renderTextMessage = (msg) => {
@@ -206,7 +141,7 @@ function ChatPage() {
             <div className="mb-4 border rounded-lg p-4 h-auto max-h-96 overflow-y-auto bg-gray-50">
                 {messages.map((msg, index) => (
                     <div key={index}>
-                        {msg.messageType === 'call' ? renderCallMessage(msg) : renderTextMessage(msg)}
+                        {renderTextMessage(msg)}
                     </div>
                 ))}
                 {messages.length === 0 && (

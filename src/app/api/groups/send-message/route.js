@@ -12,7 +12,7 @@ export async function POST(req) {
   const session = await getServerSession(authOptions)
   if (!session) return response(403, {}, "Not authorized", false)
 
-  const { groupId, content, attachment } = await req.json()
+  const { groupId, content, attachment, messageType } = await req.json()
   if (!groupId || (!content && !attachment)) return response(400, {}, "groupId and content or attachment required", false)
 
   const group = await groupModel.findById(groupId)
@@ -43,6 +43,7 @@ export async function POST(req) {
       receiverid: groupId,
       content: content || '',
       attachment: attachment || null,
+      messageType: messageType || 'text',
       type: "group"
     })
 
@@ -67,7 +68,19 @@ export async function POST(req) {
         })
         
         // Emit new_message directly for notification system
-        const notificationContent = content || (attachment ? 'Sent a file' : '');
+        let notificationContent = content;
+        if (!notificationContent && attachment) {
+          // Create specific notification content based on attachment type
+          if (attachment.resourceType === 'image') {
+            notificationContent = '📷 Sent a photo';
+          } else if (attachment.resourceType === 'video') {
+            notificationContent = '🎥 Sent a video';
+          } else if (attachment.resourceType === 'raw') {
+            notificationContent = '📎 Sent a document';
+          } else {
+            notificationContent = '📎 Sent a file';
+          }
+        }
         console.log(`Sending new_message to ${member.userId} with content: ${notificationContent}`);
         
         emitToUser(member.userId, "new_message", {

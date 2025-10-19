@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import socket from '@/lib/socket';
 import { messageSchema } from '@/schema/message-schema';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { MessageCircle, Phone, Video, Search, MoreVertical, Paperclip, Smile, Mic, Send, ChevronLeft, User, LogOut, UserPlus, Users, Copy, Delete, Users2, ArrowUpDown, ArrowUp, ArrowDown, Bot, UserMinus, Trash, Bell } from 'lucide-react';
+import { MessageCircle, Search, MoreVertical, Paperclip, Smile, Mic, Send, ChevronLeft, User, LogOut, UserPlus, Users, Copy, Delete, Users2, ArrowUpDown, ArrowUp, ArrowDown, Bot, UserMinus, Trash, Bell } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
@@ -86,6 +86,9 @@ export default function WhatsAppUI() {
     return 0;
   }) // Total count for chat icon
   const [isProcessingMessage, setIsProcessingMessage] = useState(false) // Prevent duplicate processing
+  const socketListenersRegistered = useRef(false) // Track if socket listeners are registered
+  const processingNotification = useRef(false) // Track if notification is being processed
+  const uploadAbortController = useRef(null) // Track upload request for cancellation
   // File upload UI state
   const [isUploading, setIsUploading] = useState(false)
   const fileInputRef = useRef(null)
@@ -154,6 +157,9 @@ export default function WhatsAppUI() {
       setUploadingFile(file)
       setUploadProgress(0)
       
+      // Create abort controller for cancellation
+      uploadAbortController.current = new AbortController()
+      
       // Determine resource type based on file type
       const fileType = file.type.toLowerCase()
       let resourceType = 'image' // default
@@ -191,16 +197,16 @@ export default function WhatsAppUI() {
       // For raw files (documents), use unsigned preset for public access
       if (useDirectUpload) {
         // Use unsigned preset for public access
-        const { apiKey } = signatureData
+        const { apiKey, uploadPreset } = signatureData
         form.append('api_key', apiKey)
-        form.append('upload_preset', 'unsigned')
+        form.append('upload_preset', uploadPreset || 'unsigned')
       } else {
         // For images/videos, use signed upload
         const { apiKey, timestamp, signature, folder } = signatureData
-      form.append('api_key', apiKey)
-      form.append('timestamp', timestamp)
-      form.append('signature', signature)
-      form.append('folder', folder)
+        form.append('api_key', apiKey)
+        form.append('timestamp', timestamp)
+        form.append('signature', signature)
+        form.append('folder', folder)
       }
 
       console.log('Upload parameters:', {
@@ -230,7 +236,11 @@ export default function WhatsAppUI() {
           }
         }
         xhr.onerror = () => reject(new Error('Upload error'))
+        xhr.onabort = () => reject(new Error('Upload cancelled'))
         xhr.send(form)
+        
+        // Store xhr reference for cancellation
+        uploadAbortController.current.xhr = xhr
       })
       const result = await promise
       
@@ -239,9 +249,6 @@ export default function WhatsAppUI() {
         secureUrl: result.secure_url,
         publicId: result.public_id,
         resourceType: result.resource_type,
-        deliveryType: result.type, // upload | private | authenticated
-        accessMode: result.access_mode, // public | authenticated
-        version: result.version,
         format: result.format,
         bytes: result.bytes,
         width: result.width,
@@ -253,12 +260,16 @@ export default function WhatsAppUI() {
       
       return attachment
     } catch (err) {
-      toast.error('Upload failed')
+      // Don't show error toast for cancelled uploads
+      if (err.message !== 'Upload cancelled') {
+        toast.error('Upload failed')
+      }
       throw err
     } finally {
       setIsUploading(false)
       setUploadingFile(null)
       setUploadProgress(0)
+      uploadAbortController.current = null
     }
   }
 
@@ -273,7 +284,8 @@ export default function WhatsAppUI() {
         senderid: session.user._id,
         receiverid: receiverId.current,
         content: '',
-        attachment
+        attachment,
+        messageType: 'attachment'
       })
       
       // Clear pending attachment and clean up object URL
@@ -286,7 +298,10 @@ export default function WhatsAppUI() {
         fileInputRef.current.value = ''
       }
     } catch (err) {
-      console.error('Failed to send message with attachment:', err)
+      // Don't log error for cancelled uploads
+      if (err.message !== 'Upload cancelled') {
+        console.error('Failed to send message with attachment:', err)
+      }
     }
   }
 
@@ -316,7 +331,12 @@ export default function WhatsAppUI() {
       const response = await fetch('/api/groups/send-message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groupId, content: '', attachment })
+        body: JSON.stringify({ 
+          groupId, 
+          content: '', 
+          attachment,
+          messageType: 'attachment'
+        })
       })
       const data = await response.json()
       if (data.success) {
@@ -1024,17 +1044,48 @@ const FullUILoader = () => (
   useEffect(() => {
     if (!session?.user?._id) return;
 
+    // Prevent duplicate listener registration
+    if (socketListenersRegistered.current) {
+      console.log("🔧 Socket listeners already registered, skipping...");
+      return;
+    }
+
+    console.log("🔧 Registering socket listeners for messages");
+    socketListenersRegistered.current = true;
+
     socket.on("send_message_to_sender", (message) => {
       setMessages((prev) => [...prev, message]);
     });
 
     socket.on("send_message_to_receiver", (message) => {
-      setMessages((prev) => [...prev, message]);
+      console.log("🔍 RECEIVED MESSAGE:", {
+        messageSender: message.senderid,
+        messageReceiver: message.receiverid,
+        currentUser: session?.user?._id,
+        activeChat: receiverId.current,
+        shouldShow: receiverId.current && (
+          (message.senderid === receiverId.current && message.receiverid === session?.user?._id) ||
+          (message.receiverid === receiverId.current && message.senderid === session?.user?._id)
+        )
+      });
+      
+      // Only add message if it's for the currently active chat
+      if (receiverId.current && (
+        (message.senderid === receiverId.current && message.receiverid === session?.user?._id) ||
+        (message.receiverid === receiverId.current && message.senderid === session?.user?._id)
+      )) {
+        console.log("✅ ADDING MESSAGE TO CHAT");
+        setMessages((prev) => [...prev, message]);
+      } else {
+        console.log("❌ IGNORING MESSAGE - NOT FOR CURRENT CHAT");
+      }
     });
 
     return () => {
+      console.log("🔧 Cleaning up socket listeners for messages");
       socket.off("send_message_to_sender");
       socket.off("send_message_to_receiver");
+      socketListenersRegistered.current = false;
     };
   }, [session?.user?._id]);
 
@@ -1053,22 +1104,20 @@ const FullUILoader = () => (
       if (receiverId.current.startsWith('group_')) {
         const groupId = receiverId.current.replace('group_', '');
         
-        // If there's a pending attachment, send it
+        // If there's a pending attachment, send it (and ignore text content)
         if (pendingAttachment) {
           await sendGroupMessageWithAttachment(groupId);
-        }
-        // If there's text content, send it
-        if (data.content.length > 0) {
+        } else if (data.content.length > 0) {
+          // Only send text if there's no pending attachment
           await sendGroupMessage(groupId, data.content);
         }
       } else {
         // Handle direct messages
-        // If there's a pending attachment, send it
+        // If there's a pending attachment, send it (and ignore text content)
         if (pendingAttachment) {
           await sendMessageWithAttachment();
-        }
-        // If there's text content, send it
-        if (data.content.length > 0) {
+        } else if (data.content.length > 0) {
+          // Only send text if there's no pending attachment
           sendMessage(session.user._id, receiverId.current, data.content);
         }
       }
@@ -1081,21 +1130,30 @@ const FullUILoader = () => (
   useEffect(() => {
     if (!session?.user?._id) return;
 
-    const handleNewMessage = ({ content, receiverId, senderId }) => {
-      // Create a unique message identifier
-      const messageId = `${senderId}-${receiverId}-${content}-${Date.now()}`;
-      
-      console.log("=== NEW MESSAGE DEBUG ===");
-      console.log("New message received:", { content, receiverId, senderId, messageId });
-      console.log("Current activeChat:", activeChat);
-      console.log("Current session user:", session?.user?._id);
-      console.log("Is group message:", senderId.startsWith('group_'));
-      console.log("Processed messages:", Array.from(processedMessages));
-      console.log("=========================");
+    console.log("🔔 Setting up new_message listener");
 
-      // Check if this message has already been processed
+    const handleNewMessage = ({ content, receiverId, senderId }) => {
+      // Create a unique message identifier with more precision
+      const messageId = `${senderId}-${receiverId}-${content}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      console.log("🔔 === NEW MESSAGE NOTIFICATION DEBUG ===");
+      console.log("🔔 New message received:", { content, receiverId, senderId, messageId });
+      console.log("🔔 Current activeChat:", activeChat);
+      console.log("🔔 Current session user:", session?.user?._id);
+      console.log("🔔 Is group message:", senderId.startsWith('group_'));
+      console.log("🔔 Processed messages count:", processedMessages.size);
+      console.log("🔔 Already processed?", processedMessages.has(messageId));
+      console.log("🔔 ========================================");
+
+      // Check if this message has already been processed FIRST
       if (processedMessages.has(messageId)) {
-        console.log("Message already processed, skipping...");
+        console.log("🔔 Message already processed, skipping...");
+        return;
+      }
+
+      // Additional check: if we're in the same chat, don't increment notifications
+      if (activeChat === senderId) {
+        console.log("🔔 User is actively chatting with sender, not incrementing count");
         return;
       }
 
@@ -1111,67 +1169,54 @@ const FullUILoader = () => (
 
       // Only process if the message is for the current user
       if (receiverId === session?.user?._id) {
+        // Prevent duplicate processing
+        if (processingNotification.current) {
+          console.log("🔔 Notification already being processed, skipping...");
+          return;
+        }
+        
+        processingNotification.current = true;
+        
         // Mark this message as processed
         setProcessedMessages(prev => new Set([...prev, messageId]));
         
-        // Handle group messages differently
-        if (senderId.startsWith('group_')) {
-          // For group messages, use the group ID as the key
-          if (activeChat !== senderId) {
-            setTimeout(() => {
-              setNewMessageCounts(prev => {
-                const newCounts = {
-                  ...prev,
-                  [senderId]: (prev[senderId] || 0) + 1
-                };
-                
-                // Update total count
-                const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
-                setTotalNewMessages(total);
-                
-                return newCounts;
-              });
-            }, 50);
-          }
-        } else {
-          // Handle direct messages
-          if (activeChat !== senderId) {
-            console.log("User not actively chatting with sender, incrementing count");
-            // Do NOT push chat messages into the bell notifications modal.
-            // Only increment chat icon counters below.
+        // Handle notifications for both group and direct messages
+        setTimeout(() => {
+          setNewMessageCounts(prev => {
+            const isGroup = senderId.startsWith('group_');
+            const chatKey = isGroup ? senderId : senderId;
             
-            // Add a small delay to ensure stable state updates
-            setTimeout(() => {
-              setNewMessageCounts(prev => {
-                const newCounts = {
-                  ...prev,
-                  [senderId]: (prev[senderId] || 0) + 1
-                };
-                
-                // Update total count
-                const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
-                setTotalNewMessages(total);
-                
-                return newCounts;
-              });
-            }, 50);
-          } else {
-            console.log("User is actively chatting with sender, not incrementing count");
-          }
-        }
+            console.log("🔔 Incrementing notification count for:", chatKey, "Previous count:", prev[chatKey] || 0);
+            const newCounts = {
+              ...prev,
+              [chatKey]: (prev[chatKey] || 0) + 1
+            };
+            
+            // Update total count
+            const total = Object.values(newCounts).reduce((sum, count) => sum + count, 0);
+            setTotalNewMessages(total);
+            
+            console.log("🔔 New count for", chatKey, ":", newCounts[chatKey], "Total:", total);
+            
+            // Reset processing flag
+            processingNotification.current = false;
+            
+            return newCounts;
+          });
+        }, 50);
       }
     };
 
+    // Remove any existing listeners first to prevent duplicates
+    socket.off("new_message");
     // Register the listener
     socket.on("new_message", handleNewMessage);
 
     // Cleanup function
     return () => {
       socket.off("new_message", handleNewMessage);
-      // Clear processed messages to prevent memory leaks
-      setProcessedMessages(new Set());
     };
-  }, [session?.user?._id, activeChat]); // Only depend on session and activeChat
+  }, [session?.user?._id]); // Remove activeChat dependency to prevent re-registration
 
 
   // This is already handled in the main session useEffect above
@@ -1266,33 +1311,11 @@ const FullUILoader = () => (
   useEffect(() => {
   if (!session?.user?._id) return;
 
-  socket.on("incoming_call", (data) => {
-    if (data.receiverId != session?.user?._id) return;
-    console.log("Data is : ",data)
-    if (data.type == "video") {
-      router.push(`/video-call/${data.receiverId}/receiver`);
-    } else if (data.type == "audio") {
-      router.push(`/audio-call/${data.receiverId}/receiver`);
-    }
-
-  });
-
-  return () => socket.off("incoming_call");
+  // Call functionality removed
 }, [session]);
 
 
-  const handleVideoCall = () => {
-    
-    socket.emit("user_call", {
-    senderId: session?.user?._id,
-    receiverId: receiverId.current,
-    type: "video"
-  });
-
-  // Caller should go to the video call page as caller
-  router.push(`/video-call/${receiverId.current}/sender`);
-  
-};
+  // Video call functionality removed
 
   const copyMessage = async (message) => {
     if (message.attachment) {
@@ -1340,18 +1363,7 @@ const FullUILoader = () => (
     }
   }
 
-  const handleVoiceCall = () => {
-    
-    socket.emit("user_call", {
-    senderId: session?.user?._id,
-    receiverId: receiverId.current,
-    type: "audio"
-  });
-
-  // Caller should go to the video call page as caller
-  router.push(`/audio-call/${receiverId.current}/sender`);
-  
-};
+  // Voice call functionality removed
 
 const SignOut = () => {
   console.log("signout called")
@@ -2100,11 +2112,7 @@ useEffect(() => {
       toast.error(data.message)
     })
 
-    // Listen for blocked call notifications
-    socket.on("call_blocked", (data) => {
-      console.log("Call blocked:", data)
-      toast.error(data.message)
-    })
+    // Call functionality removed
 
     // Listen for friend block/unblock notifications
     socket.on("friend_block_notification", (data) => {
@@ -2134,7 +2142,7 @@ useEffect(() => {
       socket.off("friend_request_responded", handleFriendRequestResponded)
       socket.off("friend_removed_notification")
       socket.off("message_blocked")
-      socket.off("call_blocked")
+      // Call functionality removed
       socket.off("friend_block_notification")
       socket.offAny()
     }
@@ -2454,17 +2462,7 @@ useEffect(() => {
                   )}
                 </div>
 
-                {/* Conference Call Icon with Tooltip */}
-                <div className="relative group">
-                  <Users2 
-                    size={20} 
-                    className="text-gray-600 cursor-pointer hover:text-purple-500 transition-colors duration-200" 
-                  />
-                  <div className="absolute -top-7 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-purple-500 to-pink-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                    <div className="font-medium">Conference Call</div>
-                    <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-purple-500"></div>
-                  </div>
-                </div>
+                {/* Conference Call functionality removed */}
 
                 {/* Sort Icon with Tooltip */}
                 <div className="relative group">
@@ -2917,41 +2915,7 @@ useEffect(() => {
                         // Friend Chat - Show all buttons
                         return (
                           <>
-                            {/* Video Call with Tooltip */}
-                            <div className="relative group">
-                              <Video
-                                size={20}
-                                className={`transition-colors duration-200 ${
-                                  isBlocked 
-                                    ? 'text-gray-400 cursor-not-allowed' 
-                                    : 'text-gray-600 cursor-pointer hover:text-blue-500'
-                                }`}
-                                onClick={isBlocked ? undefined : handleVideoCall}
-                                title={isBlocked ? 'Cannot call - Friend is blocked' : 'Video Call'}
-                              />
-                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-500 to-pink-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                                <div className="font-medium">{isBlocked ? 'Cannot call - Friend is blocked' : 'Video Call'}</div>
-                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-blue-500"></div>
-                              </div>
-                            </div>
-
-                            {/* Voice Call with Tooltip */}
-                            <div className="relative group">
-                              <Phone 
-                                size={20} 
-                                className={`transition-colors duration-200 ${
-                                  isBlocked 
-                                    ? 'text-gray-400 cursor-not-allowed' 
-                                    : 'text-gray-600 cursor-pointer hover:text-green-500'
-                                }`}
-                                onClick={isBlocked ? undefined : handleVoiceCall}
-                                title={isBlocked ? 'Cannot call - Friend is blocked' : 'Voice Call'}
-                              />
-                              <div className="absolute top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-500 to-emerald-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                                <div className="font-medium">{isBlocked ? 'Cannot call - Friend is blocked' : 'Voice Call'}</div>
-                                <div className="absolute -top-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-b-green-500"></div>
-                              </div>
-                            </div>
+                            {/* Call functionality removed */}
 
                             {/* Block/Unblock Button */}
                             <div className="relative group">
@@ -3713,14 +3677,9 @@ useEffect(() => {
                     </div>
                   )}
                   <div className="relative">
-                    <button type="button" onClick={() => setShowAttachMenu(v => !v)}>
-                      <Paperclip size={24} className="text-gray-600 cursor-pointer" />
+                    <button type="button" onClick={() => openFilePicker('*')}>
+                      <Paperclip size={24} className="text-gray-600 cursor-pointer hover:text-blue-500 transition-colors duration-200" />
                     </button>
-                    {showAttachMenu && (
-                      <div className="absolute bottom-9 left-0 bg-white border border-gray-200 rounded-lg shadow-lg p-2 z-10 w-40">
-                        <button type="button" onClick={() => openFilePicker('*')} className="w-full text-left text-sm px-2 py-1 rounded hover:bg-gray-100">📎 Attach File</button>
-                      </div>
-                    )}
                   </div>
                   {/* Upload Progress Indicator */}
                   {isUploading && (
@@ -3730,66 +3689,20 @@ useEffect(() => {
                           <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
                         </div>
                         <div className="flex-1">
-                          <p className="text-sm font-medium text-blue-900">Uploading...</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* File Preview Component */}
-                  {pendingAttachment && !isUploading && (
-                    <div className="mb-3 p-3 bg-gray-50 rounded-lg border">
-                      <div className="flex items-center space-x-3">
-                        {pendingAttachment.isImage && (
-                          <img 
-                            src={pendingAttachment.url} 
-                            alt="Preview" 
-                            className="w-16 h-16 object-cover rounded"
-                          />
-                        )}
-                        {pendingAttachment.isVideo && (
-                          <div className="relative w-16 h-16 rounded overflow-hidden bg-gray-200">
-                            <video 
-                              src={pendingAttachment.url} 
-                              className="w-full h-full object-cover"
-                              controls={false}
-                              muted
-                              onLoadedData={(e) => {
-                                // Set current time to 1 second to get a better thumbnail
-                                e.target.currentTime = 1;
-                              }}
-                            />
-                            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30">
-                              <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M8 5v14l11-7z"/>
-                              </svg>
-                            </div>
-                          </div>
-                        )}
-                        {pendingAttachment.isAudio && (
-                          <div className="w-16 h-16 bg-purple-100 rounded flex items-center justify-center">
-                            <svg className="w-8 h-8 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                        {pendingAttachment.isDocument && (
-                          <div className="w-16 h-16 bg-blue-100 rounded flex items-center justify-center">
-                            <svg className="w-8 h-8 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-                            </svg>
-                          </div>
-                        )}
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-gray-900">{pendingAttachment.name}</p>
-                          <p className="text-xs text-gray-500">
-                            {(pendingAttachment.size / 1024 / 1024).toFixed(2)} MB
-                          </p>
+                          <p className="text-sm font-medium text-blue-900">Uploading... {uploadProgress}%</p>
                         </div>
                         <button
                           type="button"
                           onClick={() => {
-                            // Clean up object URL
+                            // Cancel the upload
+                            if (uploadAbortController.current?.xhr) {
+                              uploadAbortController.current.xhr.abort()
+                            }
+                            setIsUploading(false)
+                            setUploadingFile(null)
+                            setUploadProgress(0)
+                            uploadAbortController.current = null
+                            // Clean up pending attachment if exists
                             if (pendingAttachment?.url) {
                               URL.revokeObjectURL(pendingAttachment.url)
                             }
@@ -3798,7 +3711,8 @@ useEffect(() => {
                               fileInputRef.current.value = ''
                             }
                           }}
-                          className="text-gray-400 hover:text-gray-600"
+                          className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1 rounded-full transition-colors duration-200"
+                          title="Cancel upload"
                         >
                           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -3808,9 +3722,92 @@ useEffect(() => {
                     </div>
                   )}
 
+
                   <div className="flex-1 bg-white rounded-full px-4 py-2">
                     <FormProvider {...form}>
                       <form onSubmit={form.handleSubmit(onSubmit)} className="flex items-center space-x-2">
+                        {/* Show preview inside input field */}
+                        {pendingAttachment && !isUploading && (
+                          <div className="flex items-center space-x-3 mr-3 bg-gray-50 rounded-lg p-2 border">
+                            {pendingAttachment.isImage && (
+                              <img 
+                                src={pendingAttachment.url} 
+                                alt="Preview" 
+                                className="w-12 h-12 object-cover rounded border"
+                              />
+                            )}
+                            {pendingAttachment.isVideo && (
+                              <div className="relative w-12 h-12 rounded overflow-hidden bg-gray-200 border">
+                                <video 
+                                  src={pendingAttachment.url} 
+                                  className="w-full h-full object-cover"
+                                  controls={false}
+                                  muted
+                                  preload="metadata"
+                                  onLoadedMetadata={(e) => {
+                                    e.target.currentTime = 1
+                                  }}
+                                  onSeeked={(e) => {
+                                    const canvas = document.createElement('canvas')
+                                    const ctx = canvas.getContext('2d')
+                                    canvas.width = e.target.videoWidth
+                                    canvas.height = e.target.videoHeight
+                                    ctx.drawImage(e.target, 0, 0, canvas.width, canvas.height)
+                                    const thumbnailUrl = canvas.toDataURL('image/jpeg', 0.8)
+                                    e.target.poster = thumbnailUrl
+                                    e.target.currentTime = 0
+                                    e.target.pause()
+                                  }}
+                                />
+                                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30">
+                                  <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M8 5v14l11-7z"/>
+                                  </svg>
+                                </div>
+                              </div>
+                            )}
+                            {pendingAttachment.isAudio && (
+                              <div className="w-12 h-12 bg-purple-100 rounded flex items-center justify-center border">
+                                <svg className="w-6 h-6 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
+                                </svg>
+                              </div>
+                            )}
+                            {pendingAttachment.isDocument && (
+                              <div className="w-12 h-12 bg-blue-100 rounded flex items-center justify-center border">
+                                <svg className="w-6 h-6 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                                </svg>
+                              </div>
+                            )}
+                            <div className="flex flex-col">
+                              <span className="text-sm font-medium text-gray-900 truncate max-w-24">
+                                {pendingAttachment.name}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                {(pendingAttachment.size / 1024 / 1024).toFixed(2)} MB
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (pendingAttachment?.url) {
+                                  URL.revokeObjectURL(pendingAttachment.url)
+                                }
+                                setPendingAttachment(null)
+                                if (fileInputRef.current) {
+                                  fileInputRef.current.value = ''
+                                }
+                              }}
+                              className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-full transition-colors duration-200"
+                              title="Remove attachment"
+                            >
+                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                              </svg>
+                            </button>
+                          </div>
+                        )}
                         <FormField
                           control={form.control}
                           name="content"
@@ -3818,7 +3815,8 @@ useEffect(() => {
                             <FormItem className="w-full">
                               <FormControl>
                                 <Input
-                                  placeholder="Enter message...."
+                                  placeholder={pendingAttachment ? "Cannot type while attachment is pending..." : "Enter message...."}
+                                  disabled={!!pendingAttachment}
                                   {...field}
                                   onChange={(e) => {
                                     field.onChange(e);

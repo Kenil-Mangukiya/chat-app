@@ -17,13 +17,14 @@ export async function POST(req) {
     ? resourceType 
     : 'image'
 
-  // For raw files (documents), use direct upload without preset
+  // For raw files (documents), use unsigned preset
   if (validResourceType === 'raw') {
     return response(200, { 
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
       resourceType: validResourceType,
-      useDirectUpload: true
+      useDirectUpload: true,
+      uploadPreset: process.env.CLOUDINARY_UNSIGNED_PRESET || 'unsigned'
     }, "Direct upload for raw files", true)
   }
 

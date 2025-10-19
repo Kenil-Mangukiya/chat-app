@@ -9,6 +9,5 @@ export const config = {
     nextAuthSecret : process.env.NEXT_AUTH_SECRET,
     googleClientId : process.env.GOOGLE_CLIENT_ID,
     googleClientSecret : process.env.GOOGLE_CLIENT_SECRET,
-    zegoCloudAppId : Number(process.env.NEXT_PUBLIC_ZEGOCLOUD_APP_ID),
-    zegoCloudServerSecret : process.env.NEXT_PUBLIC_ZEGOCLOUD_SERVER_SECRET
+    // ZEGOCLOUD configuration removed
 }

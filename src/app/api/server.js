@@ -127,6 +127,7 @@ app.prepare().then(async () => {
           receiverid: messageData.receiverid,
           content: messageData.content,
           attachment: messageData.attachment,
+          messageType: messageData.messageType || 'text',
         });
 
         await conversationModel.findByIdAndUpdate(conversation._id, {
@@ -137,74 +138,36 @@ app.prepare().then(async () => {
         io.to(messageData.senderid).emit("send_message_to_sender", newMessage);
         io.to(messageData.receiverid).emit("send_message_to_receiver", newMessage);
 
+        // Emit new_message event for notifications (only to receiver)
+        let notificationContent = messageData.content;
+        if (!notificationContent && messageData.attachment) {
+          // Create specific notification content based on attachment type
+          const attachment = messageData.attachment;
+          if (attachment.resourceType === 'image') {
+            notificationContent = '📷 Sent a photo';
+          } else if (attachment.resourceType === 'video') {
+            notificationContent = '🎥 Sent a video';
+          } else if (attachment.resourceType === 'raw') {
+            notificationContent = '📎 Sent a document';
+          } else {
+            notificationContent = '📎 Sent a file';
+          }
+        }
+        
+        io.to(messageData.receiverid).emit("new_message", {
+          content: notificationContent,
+          receiverId: messageData.receiverid,
+          senderId: messageData.senderid
+        });
+
       } catch (error) {
         console.log("Error while sending the message in server.js file: ", error);
       }
     });
 
-    socket.on("user_call", async ({ senderId, receiverId, type }) => {
-      try {
-        console.log("Call requested - senderId:", senderId);
-        console.log("Call requested - receiverId:", receiverId);
+    // Call functionality removed
 
-        // Check if either user has blocked the other
-        const friendship1 = await friendModel.findOne({
-          userid: senderId,
-          friendid: receiverId
-        });
-
-        const friendship2 = await friendModel.findOne({
-          userid: receiverId,
-          friendid: senderId
-        });
-
-        // If either friendship is blocked, prevent the call
-        if ((friendship1 && friendship1.isBlocked) || (friendship2 && friendship2.isBlocked)) {
-          console.log("Call blocked: Users have blocked each other");
-          io.to(senderId).emit("call_blocked", {
-            message: "You cannot make calls to this user. They have been blocked.",
-            receiverId: receiverId
-          });
-          return;
-        }
-
-        const findData = await userModel.findOne({ _id: senderId });
-        console.log("Sender data found:", findData);
-
-        // Cache the call data for potential retrieval later
-        callDataCache.set(receiverId, {
-          senderData: findData,
-          callType: type
-        });
-
-        // Send the call notification to the receiver
-        io.to(receiverId).emit("incoming_call", { senderId, receiverId, type });
-        
-        // Send the sender's data immediately
-        io.to(receiverId).emit("sender_data", findData);
-      } catch (err) {
-        console.error("Error in user_call event:", err);
-      }
-    });
-
-    // Handle requests for sender data (when receiver reloads page or misses initial data)
-    socket.on("request_sender_data", async (receiverId) => {
-      try {
-        console.log("Sender data requested for receiverId:", receiverId);
-        
-        // Check if we have cached data for this call
-        const cachedCallData = callDataCache.get(receiverId);
-        
-        if (cachedCallData) {
-          console.log("Found cached sender data, resending");
-          socket.emit("sender_data", cachedCallData.senderData);
-        } else {
-          console.log("No cached sender data found");
-        }
-      } catch (err) {
-        console.error("Error in request_sender_data event:", err);
-      }
-    });
+    // Call functionality removed
 
     socket.on("all_messages", async ({ senderId, receiverId }) => {
       try {
@@ -248,22 +211,7 @@ app.prepare().then(async () => {
       io.to(userId).emit("group_invited", { groupId });
     });
 
-    socket.on("call_ended",({receiverId,endedBy,direction,duration}) => {
-      try {
-        console.log("call_ended received", { receiverId, endedBy, direction, duration })
-        // Emit based solely on provided ids so we don't rely on cache
-        if (direction === "sender" && receiverId) {
-          io.to(receiverId).emit("call_ended_by_sender", { duration })
-          console.log("Emitted call_ended_by_sender to", receiverId)
-        }
-        if (direction === "receiver" && receiverId) {
-          io.to(receiverId).emit("call_ended_by_receiver", { duration })
-          console.log("Emitted call_ended_by_receiver to", receiverId)
-        }
-      } catch (e) {
-        console.log("Error handling call_ended:", e)
-      }
-    })
+    // Call functionality removed
 
     socket.on("message_deleted",async ({id,receiverId}) => {
     
@@ -272,13 +220,7 @@ app.prepare().then(async () => {
 
   })
 
-  socket.on("call_accepted",({receiverId}) => {
-    console.log("receiverId is : ",receiverId)
-    const callData = callDataCache.get(receiverId)
-    console.log("callData is : ",callData)
-    const id = callData.senderData._id.toString()
-    io.to(id).emit("accepted",[])
-  })
+  // Call functionality removed
 
  socket.on("status", ({receiverId}) => {
     console.log("receiverId in server.js is : ", receiverId)
