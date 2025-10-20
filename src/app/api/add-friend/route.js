@@ -47,14 +47,16 @@ export async function POST(req)
         userid : session.user._id,
         friendid : findUserByEmail._id,
         friendusername : findUserByEmail.username,
-        friendemail : findUserByEmail.email
+        friendemail : findUserByEmail.email,
+        friendprofilepicture : findUserByEmail.profilePicture
     })
 
     const addFriendInFriend = await friendModel.create({
         userid : findUserByEmail._id,
         friendid : session.user._id,
         friendusername : session.user.username,
-        friendemail : session.user.email
+        friendemail : session.user.email,
+        friendprofilepicture : session.user.profilePicture
     })
 
     return response(200,{},"Friend added successfully",true)

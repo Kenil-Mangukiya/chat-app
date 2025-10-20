@@ -10,6 +10,7 @@
 !.yarn/releases
 !.yarn/versions
 .pnp.js
+.output.log
 
 # testing
 /coverage
@@ -48,4 +49,4 @@ yarn-error.log*
 next-env.d.ts
 
 # output.log
-output.log
+*.log

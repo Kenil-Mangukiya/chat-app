@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { toast } from "react-toastify"
 import Link from "next/link"
+import { UserIcon } from "lucide-react"
 
 function SignUpPage() {
   const [username, setUsername] = useState("")
@@ -387,7 +388,7 @@ function SignUpPage() {
                   </div>
                 ) : (
                   <div className="w-24 h-24 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center text-white text-2xl font-bold shadow-lg">
-                    {username ? username.charAt(0).toUpperCase() : '?'}
+                    {username ? username.charAt(0).toUpperCase() : <UserIcon size={24} />}
                   </div>
                 )}
                 <div className="flex flex-col items-center space-y-2">

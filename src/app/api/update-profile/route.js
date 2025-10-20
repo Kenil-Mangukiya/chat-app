@@ -3,8 +3,7 @@ import userModel from "@/model/user-model"
 import friendModel from "@/model/friend-model"
 import groupModel from "@/model/group-model"
 import { response } from "@/util/response"
-import { writeFile, mkdir, unlink } from "fs/promises"
-import path from "path"
+import { uploadToCloudinary, deleteFromCloudinary, extractPublicId } from "@/lib/cloudinary-config"
 import { getServerSession } from "next-auth/next"
 import { authOption } from "../auth/[...nextauth]/option"
 
@@ -46,31 +45,53 @@ export async function PUT(req) {
         }
 
         let profilePicturePath = user.profilePicture // Keep existing if not updated
-        let localFilePath = null // Store the local file path for later deletion
         
         // Handle profile picture removal
         if (removeProfilePicture === 'true') {
+            // Delete old profile picture from Cloudinary if it exists
+            if (user.profilePicture && user.profilePicture.includes('cloudinary.com')) {
+                try {
+                    const publicId = extractPublicId(user.profilePicture)
+                    if (publicId) {
+                        await deleteFromCloudinary(publicId)
+                        console.log('Deleted old profile picture from Cloudinary:', publicId)
+                    }
+                } catch (deleteError) {
+                    console.error('Error deleting old profile picture from Cloudinary:', deleteError)
+                }
+            }
             profilePicturePath = null
         }
         // Handle profile picture upload if provided
         else if (profilePicture && profilePicture.size > 0) {
-            const bytes = await profilePicture.arrayBuffer()
-            const buffer = Buffer.from(bytes)
-            
-            // Create uploads directory if it doesn't exist
-            const uploadsDir = path.join(process.cwd(), 'public', 'uploads', 'profiles')
-            await mkdir(uploadsDir, { recursive: true })
-            
-            // Generate unique filename using user ID to prevent profile picture changes when username changes
-            const timestamp = Date.now()
-            const fileExtension = path.extname(profilePicture.name)
-            const filename = `${user._id}_${timestamp}${fileExtension}`
-            const filepath = path.join(uploadsDir, filename)
-            
-            // Save file
-            await writeFile(filepath, buffer)
-            profilePicturePath = `/uploads/profiles/${filename}`
-            localFilePath = filepath // Store for later deletion
+            try {
+                // Delete old profile picture from Cloudinary if it exists
+                if (user.profilePicture && user.profilePicture.includes('cloudinary.com')) {
+                    try {
+                        const publicId = extractPublicId(user.profilePicture)
+                        if (publicId) {
+                            await deleteFromCloudinary(publicId)
+                            console.log('Deleted old profile picture from Cloudinary:', publicId)
+                        }
+                    } catch (deleteError) {
+                        console.error('Error deleting old profile picture from Cloudinary:', deleteError)
+                    }
+                }
+                
+                // Convert file to buffer for Cloudinary upload
+                const bytes = await profilePicture.arrayBuffer()
+                const buffer = Buffer.from(bytes)
+                
+                // Upload new profile picture to Cloudinary
+                const cloudinaryResult = await uploadToCloudinary(buffer, 'chatly-profiles')
+                profilePicturePath = cloudinaryResult.secure_url
+                
+                console.log('New profile picture uploaded to Cloudinary:', cloudinaryResult.secure_url)
+            } catch (uploadError) {
+                console.error('Error uploading profile picture to Cloudinary:', uploadError)
+                // Keep existing profile picture if upload fails
+                profilePicturePath = user.profilePicture
+            }
         }
 
         // Update user in database
@@ -96,16 +117,7 @@ export async function PUT(req) {
             return response(404, {}, "User not found", false)
         }
 
-        // Delete the local profile picture file after successful database update
-        if (localFilePath) {
-            try {
-                await unlink(localFilePath)
-                console.log('Local profile picture file deleted:', localFilePath)
-            } catch (error) {
-                console.error('Error deleting local profile picture file:', error)
-                // Don't fail the request if file deletion fails
-            }
-        }
+        // Profile pictures are now stored in Cloudinary, no local file cleanup needed
 
         // Update the user cache in the socket server
         if (global.updateUserCache) {

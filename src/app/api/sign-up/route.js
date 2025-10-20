@@ -4,8 +4,7 @@ import userModel from "@/model/user-model"
 import { response } from "@/util/response"
 import { addAiFriendToUser } from "@/util/add-ai-friend"
 import bcrypt from "bcryptjs"
-import { writeFile, mkdir } from "fs/promises"
-import path from "path"
+import { uploadToCloudinary } from "@/lib/cloudinary-config"
 
 export async function POST(req,res)
 {
@@ -28,22 +27,25 @@ export async function POST(req,res)
         
         // Handle profile picture upload if provided
         if (profilePicture && profilePicture.size > 0) {
-            const bytes = await profilePicture.arrayBuffer()
-            const buffer = Buffer.from(bytes)
-            
-            // Create uploads directory if it doesn't exist
-            const uploadsDir = path.join(process.cwd(), 'public', 'uploads', 'profiles')
-            await mkdir(uploadsDir, { recursive: true })
-            
-            // Generate unique filename
-            const timestamp = Date.now()
-            const fileExtension = path.extname(profilePicture.name)
-            const filename = `${username}_${timestamp}${fileExtension}`
-            const filepath = path.join(uploadsDir, filename)
-            
-            // Save file
-            await writeFile(filepath, buffer)
-            profilePicturePath = `/uploads/profiles/${filename}`
+            try {
+                // Convert file to buffer for Cloudinary upload
+                const bytes = await profilePicture.arrayBuffer()
+                const buffer = Buffer.from(bytes)
+                
+                // Upload to Cloudinary
+                const cloudinaryResult = await uploadToCloudinary(buffer, 'chatly-profiles')
+                profilePicturePath = cloudinaryResult.secure_url
+                
+                console.log('Profile picture uploaded to Cloudinary:', {
+                    secure_url: cloudinaryResult.secure_url,
+                    public_id: cloudinaryResult.public_id,
+                    format: cloudinaryResult.format
+                })
+            } catch (uploadError) {
+                console.error('Error uploading profile picture to Cloudinary:', uploadError)
+                // Continue without profile picture if upload fails
+                profilePicturePath = null
+            }
         }
 
         const createUser = await userModel.create({
@@ -54,7 +56,13 @@ export async function POST(req,res)
             profilePicture: profilePicturePath
         })
 
-        console.log("Created user is : ",createUser)
+        console.log("Created user is : ", {
+            _id: createUser._id,
+            username: createUser.username,
+            email: createUser.email,
+            profilePicture: createUser.profilePicture,
+            hasProfilePicture: !!createUser.profilePicture
+        })
 
         // Automatically add AI friend to the new user
         try {

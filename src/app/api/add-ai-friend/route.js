@@ -37,7 +37,8 @@ export async function POST(req,res)
                 userid : userId,
                 friendid : findAiInUserModel._id,
                 friendusername : findAiInUserModel.username,
-                friendemail : findAiInUserModel.email
+                friendemail : findAiInUserModel.email,
+                friendprofilepicture : findAiInUserModel.profilePicture
             })
             console.log("createAiFriend is : ",createAiFriend)
 

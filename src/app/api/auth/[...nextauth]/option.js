@@ -68,7 +68,8 @@ export const authOption = {
               id: userData._id.toString(),
               _id: userData._id.toString(),
               email: userData.email,
-              username: userData.username
+              username: userData.username,
+              profilePicture: userData.profilePicture
             };
           } else {
             throw new Error("Incorrect password");
@@ -164,6 +165,7 @@ export const authOption = {
           token._id = user._id || user.id;
           token.username = user.username;
           token.email = user.email;
+          token.profilePicture = user.profilePicture;
         }
       }
       

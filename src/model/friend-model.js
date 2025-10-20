@@ -17,6 +17,10 @@ const friendSchema = new mongoose.Schema({
         type : String,
         required : true
     },
+    friendprofilepicture : {
+        type : String,
+        default : null
+    },
     isBlocked : {
         type : Boolean,
         default : false

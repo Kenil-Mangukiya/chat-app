@@ -36,7 +36,8 @@ export async function addAiFriendToUser(userId) {
             userid: userId,
             friendid: aiUser._id,
             friendusername: aiUser.username,
-            friendemail: aiUser.email
+            friendemail: aiUser.email,
+            friendprofilepicture: aiUser.profilePicture
         });
 
         console.log("AI friend added successfully for user:", userId);

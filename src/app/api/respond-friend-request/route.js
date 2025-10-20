@@ -45,7 +45,8 @@ export async function POST(req) {
                 userid: friendRequest.senderId,
                 friendid: friendRequest.receiverId,
                 friendusername: session.user.username,
-                friendemail: session.user.email
+                friendemail: session.user.email,
+                friendprofilepicture: session.user.profilePicture
             })
         } catch (e) {}
 
@@ -54,7 +55,8 @@ export async function POST(req) {
                 userid: friendRequest.receiverId,
                 friendid: friendRequest.senderId,
                 friendusername: friendRequest.senderUsername,
-                friendemail: senderUser?.email || ""
+                friendemail: senderUser?.email || "",
+                friendprofilepicture: senderUser?.profilePicture || null
             })
         } catch (e) {}
 

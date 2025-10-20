@@ -18,6 +18,7 @@ import axios, { AxiosError } from 'axios';
 import { toast } from 'react-toastify';
 import { signOut, update } from "next-auth/react";
 import { generateAvatarInitials, generateAvatarColor } from "@/util/generate-avatar";
+import { getSafeProfilePictureUrl } from "@/util/profile-picture-utils";
 import { Avatar } from "@/components/ui/avatar";
 import { ChatlyLoader } from "@/components/ui/chatly-loader";
 
@@ -56,8 +57,12 @@ export default function ChatlyUI() {
   const [profilePicturePreview, setProfilePicturePreview] = useState(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [editableUsername, setEditableUsername] = useState('');
+  const [shouldRemoveProfilePicture, setShouldRemoveProfilePicture] = useState(false);
   const [friends, setFriends] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
+  const [avatarRefreshKey, setAvatarRefreshKey] = useState(0);
+  const [friendsListKey, setFriendsListKey] = useState(0);
+  const [forceRerender, setForceRerender] = useState(0);
   const { data: session, update } = useSession();
   const [sessionData, setSessionData] = useState(session);
   const router = useRouter();
@@ -83,6 +88,12 @@ export default function ChatlyUI() {
     return () => window.removeEventListener('session-update', handleSessionUpdate);
   }, []);
 
+  // Force re-render when friends list changes
+  useEffect(() => {
+    console.log('Friends list changed, forcing re-render:', friends.length);
+    setForceRerender(prev => prev + 1);
+  }, [friends]);
+
   // Listen for profile updates from other users
   useEffect(() => {
     const handleProfileUpdate = (data) => {
@@ -90,30 +101,63 @@ export default function ChatlyUI() {
       console.log('Updating friends list for user:', data.userId);
       // Update friends list if the updated user is in the friends list
       setFriends(prevFriends => {
+        console.log('Current friends before update:', prevFriends.map(f => ({ id: f.friendid, username: f.friendusername, profilePicture: f.friendprofilepicture })));
         const updatedFriends = prevFriends.map(friend => {
+          console.log('Checking friend:', friend.friendid, 'against userId:', data.userId, 'match:', friend.friendid === data.userId);
           if (friend.friendid === data.userId) {
             console.log('Updating friend:', friend.friendusername, 'with new data:', data);
             return { ...friend, friendusername: data.username, friendprofilepicture: data.profilePicture };
           }
           return friend;
         });
-        console.log('Updated friends list:', updatedFriends);
+        console.log('Updated friends list:', updatedFriends.map(f => ({ id: f.friendid, username: f.friendusername, profilePicture: f.friendprofilepicture })));
+        
+        // Force multiple re-renders
+        setAvatarRefreshKey(prev => prev + 1);
+        setFriendsListKey(prev => prev + 1);
+        setForceRerender(prev => prev + 1);
+        
+        // Force additional re-renders
+        setTimeout(() => {
+          setAvatarRefreshKey(prev => prev + 1);
+          setFriendsListKey(prev => prev + 1);
+          setForceRerender(prev => prev + 1);
+        }, 50);
+        
+        setTimeout(() => {
+          setAvatarRefreshKey(prev => prev + 1);
+          setFriendsListKey(prev => prev + 1);
+          setForceRerender(prev => prev + 1);
+        }, 150);
+        
         return updatedFriends;
       });
     };
 
     const handleFriendProfileUpdate = (data) => {
       console.log('Friend profile updated:', data);
-      console.log('Current friends before update:', friends);
       
       // Update friends list with the updated friend data
       setFriends(prevFriends => {
-        const updatedFriends = prevFriends.map(friend => 
-          friend.friendid === data.friendId 
-            ? { ...friend, friendusername: data.username, friendprofilepicture: data.profilePicture }
-            : friend
-        );
-        console.log('Updated friends after profile change:', updatedFriends);
+        console.log('Current friends before update:', prevFriends.map(f => ({ id: f.friendid, username: f.friendusername, profilePicture: f.friendprofilepicture })));
+        const updatedFriends = prevFriends.map(friend => {
+          console.log('Checking friend:', friend.friendid, 'against friendId:', data.friendId, 'match:', friend.friendid === data.friendId);
+          if (friend.friendid === data.friendId) {
+            console.log('Updating friend in handleFriendProfileUpdate:', friend.friendusername, 'with new data:', data);
+            return { ...friend, friendusername: data.username, friendprofilepicture: data.profilePicture };
+          }
+          return friend;
+        });
+        console.log('Updated friends after profile change:', updatedFriends.map(f => ({ id: f.friendid, username: f.friendusername, profilePicture: f.friendprofilepicture })));
+        setAvatarRefreshKey(prev => prev + 1);
+        setFriendsListKey(prev => prev + 1);
+        setForceRerender(prev => prev + 1);
+        // Force a re-render by updating the state with a new reference
+        setTimeout(() => {
+          setAvatarRefreshKey(prev => prev + 1);
+          setFriendsListKey(prev => prev + 1);
+          setForceRerender(prev => prev + 1);
+        }, 100);
         return updatedFriends;
       });
       
@@ -848,9 +892,10 @@ export default function ChatlyUI() {
     }
   }
 
-  const removeProfilePicture = () => {
+  const handleRemoveProfilePicture = () => {
     setProfilePicture(null)
     setProfilePicturePreview(null)
+    setShouldRemoveProfilePicture(true)
     if (profileFileInputRef.current) {
       profileFileInputRef.current.value = ''
     }
@@ -864,8 +909,8 @@ export default function ChatlyUI() {
       formData.append('username', editableUsername)
       if (profilePicture) {
         formData.append('profilePicture', profilePicture)
-      } else if (profilePicturePreview === null && sessionData?.user?.profilePicture) {
-        // If user removed the profile picture
+      } else if (shouldRemoveProfilePicture) {
+        // If user explicitly removed the profile picture
         formData.append('removeProfilePicture', 'true')
       }
       
@@ -880,6 +925,7 @@ export default function ChatlyUI() {
         setShowProfileModal(false)
         setProfilePicture(null)
         setProfilePicturePreview(null)
+        setShouldRemoveProfilePicture(false)
         
         // Refresh the session with updated data
         try {
@@ -913,11 +959,10 @@ export default function ChatlyUI() {
   useEffect(() => {
     if (showProfileModal && sessionData?.user?.username) {
       setEditableUsername(sessionData.user.username)
-    } else if (!showProfileModal) {
-      // Reset state when modal closes
-      setProfilePicture(null)
-      setProfilePicturePreview(null)
-      setEditableUsername('')
+        // Reset profile picture state when modal opens
+        setProfilePicture(null)
+        setProfilePicturePreview(null)
+        setShouldRemoveProfilePicture(false)
     }
   }, [showProfileModal, sessionData?.user?.username])
 
@@ -2347,11 +2392,12 @@ useEffect(() => {
               <div className="flex items-center">
                 <div className="relative group">
                   <Avatar 
+                    key={`${sessionData?.user?._id}-${sessionData?.user?.profilePicture}-${avatarRefreshKey}-${forceRerender}`}
                     user={sessionData?.user} 
                     size="md" 
                     className="cursor-pointer hover:scale-105 transition-all duration-300"
                     onClick={() => setShowProfileModal(true)}
-                    showUserIcon={!sessionData?.user?.profilePicture}
+                    showUserIcon={false}
                   />
                   <div className="absolute top-11 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-pink-500 to-yellow-500 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
                     <div className="font-medium">View Profile</div>
@@ -2648,7 +2694,7 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
+            <div key={friendsListKey} className="flex-1 overflow-y-auto">
               {/* Combined Chat List */}
               {(() => {
                 // Create combined list with proper sorting
@@ -2719,9 +2765,15 @@ useEffect(() => {
                           <Bot size={20} className="text-white" />
                         </div>
                       ) : (
-                        <div className="w-10 h-10 rounded-full bg-gray-400 flex items-center justify-center">
-                          <User size={20} className="text-white" />
-                        </div>
+                        <Avatar 
+                          key={`${item.friendid}-${item.friendprofilepicture}-${avatarRefreshKey}-${forceRerender}`}
+                          user={{ 
+                            username: item.friendusername, 
+                            profilePicture: item.friendprofilepicture 
+                          }} 
+                          size="md"
+                          showUserIcon={false}
+                        />
                       )}
                     </div>
                     <div className="flex-1">
@@ -2775,6 +2827,11 @@ useEffect(() => {
                   <div className="max-h-48 overflow-y-auto">
                     {friends.map(friend => {
                       const isAI = friend.friendusername.toLowerCase().includes('ai');
+                      console.log('Rendering friend:', {
+                        username: friend.friendusername,
+                        profilePicture: friend.friendprofilepicture,
+                        safeUrl: getSafeProfilePictureUrl(friend.friendprofilepicture)
+                      })
                       return (
                         <div
                           key={friend._id}
@@ -2793,11 +2850,13 @@ useEffect(() => {
                               </div>
                             ) : (
                               <Avatar 
+                                key={`${friend.friendid}-${friend.friendprofilepicture}-${avatarRefreshKey}-${forceRerender}-${Date.now()}`}
                                 user={{ 
                                   username: friend.friendusername, 
                                   profilePicture: friend.friendprofilepicture 
                                 }} 
-                                size="sm" 
+                                size="sm"
+                                showUserIcon={false}
                               />
                             )}
                           </div>
@@ -4667,10 +4726,12 @@ useEffect(() => {
                     <div className="flex items-center space-x-4">
                       {/* Avatar */}
                       <Avatar 
+                        key={`${user._id}-${user.profilePicture}-${avatarRefreshKey}-${forceRerender}`}
                         user={user} 
                         size="lg" 
                         showStatus={true} 
                         status={userStatus[user._id] || "offline"}
+                        showUserIcon={false}
                       />
                       
                       {/* User Info */}
@@ -4795,31 +4856,37 @@ useEffect(() => {
                       className="w-32 h-32 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
                     />
                     <button
-                      onClick={removeProfilePicture}
+                      onClick={handleRemoveProfilePicture}
                       className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors"
                     >
                       ×
                     </button>
                   </div>
-                ) : sessionData?.user?.profilePicture ? (
+                ) : getSafeProfilePictureUrl(sessionData?.user?.profilePicture) ? (
                   <div className="relative">
                     <img
-                      src={sessionData.user.profilePicture}
+                      src={getSafeProfilePictureUrl(sessionData.user.profilePicture)}
                       alt="Current profile"
                       className="w-32 h-32 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
                       onError={(e) => {
-                        // Fallback to initials if image fails to load
+                        // Fallback to user icon if image fails to load
                         e.target.style.display = 'none'
                         e.target.nextSibling.style.display = 'flex'
                       }}
                     />
                     <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg hidden">
-                      {generateAvatarInitials(sessionData?.user?.username || '')}
+                      <User size={32} className="text-white" />
                     </div>
+                    <button
+                      onClick={handleRemoveProfilePicture}
+                      className="absolute -top-2 -right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors"
+                    >
+                      ×
+                    </button>
                   </div>
                 ) : (
                   <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg">
-                    {generateAvatarInitials(sessionData?.user?.username || '')}
+                    <User size={32} className="text-white" />
                   </div>
                 )}
               </div>
@@ -4833,22 +4900,12 @@ useEffect(() => {
                   className="hidden"
                   id="profile-picture-update"
                 />
-                <div className="flex space-x-2">
-                  <label
-                    htmlFor="profile-picture-update"
-                    className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg cursor-pointer hover:bg-indigo-200 transition-colors font-medium"
-                  >
-                    {profilePicture ? 'Change Picture' : 'Update Picture'}
-                  </label>
-                  {sessionData?.user?.profilePicture && (
-                    <button
-                      onClick={removeProfilePicture}
-                      className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors font-medium"
-                    >
-                      Remove Picture
-                    </button>
-                  )}
-                </div>
+                <label
+                  htmlFor="profile-picture-update"
+                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-lg cursor-pointer hover:from-purple-600 hover:to-purple-700 transition-all duration-200 font-medium shadow-lg"
+                >
+                  Update Picture
+                </label>
                 {profilePicture && (
                   <p className="text-xs text-gray-500 text-center">
                     {profilePicture.name}

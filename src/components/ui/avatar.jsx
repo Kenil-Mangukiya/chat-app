@@ -1,4 +1,5 @@
 import { generateAvatarInitials, generateAvatarColor } from "@/util/generate-avatar"
+import { getSafeProfilePictureUrl, isCloudinaryUrl, isLocalProfilePicture } from "@/util/profile-picture-utils"
 import { User } from "lucide-react"
 
 export function Avatar({ 
@@ -28,19 +29,34 @@ export function Avatar({
   const initials = generateAvatarInitials(user?.username || user?.name || "")
   // Use consistent purple background instead of random colors
   const colorClass = "from-purple-400 to-purple-600"
+  
+  // Get safe profile picture URL (handles local paths that cause 404s)
+  const safeProfilePicture = getSafeProfilePictureUrl(user?.profilePicture)
+  
+  // Debug logging
+  console.log('Avatar Debug:', {
+    username: user?.username,
+    originalUrl: user?.profilePicture,
+    safeUrl: safeProfilePicture,
+    showUserIcon: showUserIcon
+  })
 
   return (
     <div className={`relative ${className}`} onClick={onClick}>
-      {user?.profilePicture ? (
+      {safeProfilePicture ? (
         <div className={`${sizeClasses[size]} rounded-full overflow-hidden shadow-lg`}>
           <img
-            src={user.profilePicture}
+            src={safeProfilePicture}
             alt={`${user.username || user.name}'s avatar`}
             className="w-full h-full object-cover"
             onError={(e) => {
-              // Fallback to initials if image fails to load
+              console.log('Image failed to load:', safeProfilePicture)
+              // Fallback to user icon if image fails to load (404, network error, etc.)
               e.target.style.display = 'none'
               e.target.nextSibling.style.display = 'flex'
+            }}
+            onLoad={() => {
+              console.log('Image loaded successfully:', safeProfilePicture)
             }}
           />
           <div 
