@@ -2,7 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod"
 import { signIn, useSession } from "next-auth/react"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
 import { toast } from "react-toastify"
@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { signinSchema } from "@/schema/sign-in-schema"
-import { authOption } from "@/app/api/auth/[...nextauth]/option"
+// Removed unused auth options import
 import axios from "axios"
 
 function SignInPage() {
@@ -32,6 +32,12 @@ function SignInPage() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false)
   const router = useRouter()
   const {data : session,status} = useSession()
+  // If already authenticated, redirect to /ui
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.replace("/ui")
+    }
+  }, [status, router])
  
   const form = useForm({
     resolver: zodResolver(signinSchema),
@@ -63,7 +69,7 @@ function SignInPage() {
       })
       
       if (response?.error) {  
-        toast.error(response.error)
+        toast.error("Invalid credentials")
       } else {
         toast.success("Successfully signed in!")
         
@@ -83,7 +89,7 @@ function SignInPage() {
 
 
     } catch (error) {
-      toast.error(error?.response?.data?.message)
+      toast.error("Invalid credentials")
       console.log("Error is : ",error)
     } finally {
       setLoading(false)

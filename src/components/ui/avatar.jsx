@@ -1,5 +1,5 @@
-import { generateAvatarInitials, generateAvatarColor } from "@/util/generate-avatar"
-import { getSafeProfilePictureUrl, isCloudinaryUrl, isLocalProfilePicture } from "@/util/profile-picture-utils"
+import { generateAvatarInitials } from "@/util/generate-avatar"
+import { getSafeProfilePictureUrl } from "@/util/profile-picture-utils"
 import { User } from "lucide-react"
 
 export function Avatar({ 
@@ -30,13 +30,15 @@ export function Avatar({
   // Use consistent purple background instead of random colors
   const colorClass = "from-purple-400 to-purple-600"
   
+  // Only use explicit profilePicture; do NOT fallback to provider image
+  const rawProfileUrl = user?.profilePicture
   // Get safe profile picture URL (handles local paths that cause 404s)
-  const safeProfilePicture = getSafeProfilePictureUrl(user?.profilePicture)
+  const safeProfilePicture = getSafeProfilePictureUrl(rawProfileUrl)
   
   // Debug logging
   console.log('Avatar Debug:', {
     username: user?.username,
-    originalUrl: user?.profilePicture,
+    originalUrl: rawProfileUrl,
     safeUrl: safeProfilePicture,
     showUserIcon: showUserIcon
   })
@@ -49,6 +51,8 @@ export function Avatar({
             src={safeProfilePicture}
             alt={`${user.username || user.name}'s avatar`}
             className="w-full h-full object-cover"
+            referrerPolicy="no-referrer"
+            loading="lazy"
             onError={(e) => {
               console.log('Image failed to load:', safeProfilePicture)
               // Fallback to user icon if image fails to load (404, network error, etc.)

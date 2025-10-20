@@ -9,7 +9,7 @@ import { config } from "@/config/config";
 
 // Check for required environment variables
 const requiredEnvVars = {
-  NEXT_AUTH_SECRET: process.env.NEXT_AUTH_SECRET || config.nextAuthSecret,
+  NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET || config.nextAuthSecret,
   MONGODB_URI: process.env.MONGODB_URI || config.mongodbUri,
 };
 
@@ -58,7 +58,7 @@ export const authOption = {
           // console.log("User data found:", userData ? "yes" : "no");
           
           if (!userData) {
-            throw new Error("Invalid email id");
+            throw new Error("Invalid credentials");
           }
           
           const checkPassword = await bcrypt.compare(credentials.password, userData.password);
@@ -72,7 +72,7 @@ export const authOption = {
               profilePicture: userData.profilePicture
             };
           } else {
-            throw new Error("Incorrect password");
+            throw new Error("Invalid credentials");
           }
         } catch (error) {
           console.error("Authorize error:", error);
@@ -100,13 +100,14 @@ export const authOption = {
 
           if (existingUser) {
             if (existingUser.googleid) {
-              return true; // Allow sign-in and redirect to /ui
+              return true; // Already linked; use DB-stored username/profilePicture
             } else {
-              // Link Google account to existing user
+              // Link Google account to existing user without changing profile data
               existingUser.googleid = profile.id;
-              existingUser.profilePicture = profile.picture;
+              // Do NOT set profile picture from Google, even if null — respect user's removal
+              // Do NOT overwrite username — respect user-chosen username
               await existingUser.save();
-              return true; // Allow sign-in and redirect to /ui
+              return true;
             }
           } else {
             // Create new user with Google account
@@ -201,6 +202,9 @@ export const authOption = {
         session.user.username = token.username;
         session.user.email = token.email;
         session.user.profilePicture = token.profilePicture;
+        // Keep name/image in sync so UI never falls back to Google defaults
+        session.user.name = token.username;
+        session.user.image = token.profilePicture;
       }
       
       // console.log("Session created successfully:", session);
@@ -220,9 +224,9 @@ export const authOption = {
   },
 
   debug: process.env.NODE_ENV !== "production", // Only debug in development
-  secret: config.nextAuthSecret || process.env.NEXT_AUTH_SECRET || "fallback-secret-key-for-development",
+  secret: process.env.NEXTAUTH_SECRET || config.nextAuthSecret || "fallback-secret-key-for-development",
   
   // Add explicit URL configuration
-  url: process.env.NEXTAUTH_URL || process.env.NEXT_AUTH_URL || "http://localhost:3000",
+  url: process.env.NEXTAUTH_URL || "http://localhost:3000",
 };
 

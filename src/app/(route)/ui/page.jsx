@@ -59,7 +59,24 @@ export default function ChatlyUI() {
   const [editableUsername, setEditableUsername] = useState('');
   const [shouldRemoveProfilePicture, setShouldRemoveProfilePicture] = useState(false);
   const [friends, setFriends] = useState([]);
+  // Tracks when a chat was cleared for the current user; key is receiverId (friendId or group_*)
+  const [clearedAtMap, setClearedAtMap] = useState(() => {
+    try { return JSON.parse(typeof window !== 'undefined' ? (sessionStorage.getItem('clearedAtMap') || '{}') : '{}') } catch { return {} }
+  });
   const [activeChat, setActiveChat] = useState(null);
+  // Keep a live ref of activeChat to avoid stale closures inside socket handlers
+  const activeChatRef = useRef(null);
+  useEffect(() => {
+    activeChatRef.current = activeChat;
+  }, [activeChat]);
+  // Short-lived dedupe cache for notification events to avoid double counts
+  const recentNotificationsRef = useRef(new Set());
+  const isDuplicateNotification = (key) => {
+    if (recentNotificationsRef.current.has(key)) return true;
+    recentNotificationsRef.current.add(key);
+    setTimeout(() => recentNotificationsRef.current.delete(key), 2000);
+    return false;
+  };
   const [avatarRefreshKey, setAvatarRefreshKey] = useState(0);
   const [friendsListKey, setFriendsListKey] = useState(0);
   const [forceRerender, setForceRerender] = useState(0);
@@ -533,6 +550,9 @@ export default function ChatlyUI() {
   const [removeLoading, setRemoveLoading] = useState({})
   const [showRemoveConfirmModal, setShowRemoveConfirmModal] = useState(false)
   const [friendToRemove, setFriendToRemove] = useState(null)
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false)
+  const [deleteAccountLoading, setDeleteAccountLoading] = useState(false)
+  const [copiedMessageId, setCopiedMessageId] = useState(null)
 
   // Fetch all users for add friend modal
   const fetchAllUsers = async () => {
@@ -746,12 +766,15 @@ export default function ChatlyUI() {
   const [selectedInviteeIds, setSelectedInviteeIds] = useState([])
   const [groupSubmitAttempted, setGroupSubmitAttempted] = useState(false)
   const [groupSearch, setGroupSearch] = useState("")
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false)
   const [groupFilteredFriends, setGroupFilteredFriends] = useState([])
   const [groupNameServerError, setGroupNameServerError] = useState("")
   const [isMuted, setIsMuted] = useState(false) // Mute notifications state
   const [showDeleteGroupModal, setShowDeleteGroupModal] = useState(false)
   const [showLeaveGroupModal, setShowLeaveGroupModal] = useState(false)
   const [showGroupMembersModal, setShowGroupMembersModal] = useState(false)
+  const [isDeletingGroup, setIsDeletingGroup] = useState(false)
+  const [isLeavingGroup, setIsLeavingGroup] = useState(false)
 
   // Helper function to deduplicate groups
   const deduplicateGroups = (groups) => {
@@ -824,6 +847,7 @@ export default function ChatlyUI() {
     const groupId = receiverId.current.replace('group_', '')
     
     try {
+      setIsDeletingGroup(true)
       const res = await fetch('/api/groups/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -845,6 +869,9 @@ export default function ChatlyUI() {
       console.error('Error deleting group:', e)
       toast.error("Failed to delete group")
     }
+    finally {
+      setIsDeletingGroup(false)
+    }
   }
 
   // Function to confirm leave group
@@ -854,6 +881,7 @@ export default function ChatlyUI() {
     const groupId = receiverId.current.replace('group_', '')
     
     try {
+      setIsLeavingGroup(true)
       const res = await fetch('/api/groups/leave', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -875,6 +903,9 @@ export default function ChatlyUI() {
       console.error('Error leaving group:', e)
       toast.error("Failed to leave group")
     }
+    finally {
+      setIsLeavingGroup(false)
+    }
   }
   const notificationRef = useRef(null)
   const emojiPickerRef = useRef(null)
@@ -893,12 +924,23 @@ export default function ChatlyUI() {
   }
 
   const handleRemoveProfilePicture = () => {
+    console.log('Removing profile picture preview...')
     setProfilePicture(null)
     setProfilePicturePreview(null)
     setShouldRemoveProfilePicture(true)
     if (profileFileInputRef.current) {
       profileFileInputRef.current.value = ''
     }
+    console.log('Profile picture preview removed')
+    
+    // Force multiple re-renders to ensure state updates are applied
+    setTimeout(() => {
+      setForceRerender(prev => prev + 1)
+    }, 50)
+    
+    setTimeout(() => {
+      setForceRerender(prev => prev + 1)
+    }, 150)
   }
 
   const updateProfile = async () => {
@@ -938,6 +980,10 @@ export default function ChatlyUI() {
             await update({
               user: updatedUserData
             })
+            // Proactively sync local sessionData consumers
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('session-update', { detail: { user: updatedUserData } }))
+            }
           }
         } catch (sessionError) {
           console.error('Error refreshing session:', sessionError)
@@ -1071,7 +1117,7 @@ export default function ChatlyUI() {
     // Check status of current receiver
     socket.emit("status", { receiverId: receiverId.current });
 
-    // Get friends list
+    // Get friends list and groups simultaneously
       socket.emit("get_friends", userId);
       socket.on("friend_list", (friendData) => {
         console.log("Friend list received:", friendData)
@@ -1088,6 +1134,20 @@ export default function ChatlyUI() {
         console.log("Deduplicated friends:", uniqueFriends.length, "from", friendData.length)
         setFriends(uniqueFriends);
       });
+
+      // Load groups immediately alongside friends
+      const loadGroups = async () => {
+        try {
+          const res = await fetch('/api/groups/list')
+          const data = await res.json()
+          if (data?.success) {
+            setGroups(deduplicateGroups(data.data.groups || []))
+          }
+        } catch (e) {
+          console.error('Error loading groups:', e)
+        }
+      }
+      loadGroups();
 
     // Ensure AI friend is added for existing users
     const ensureAiFriend = async () => {
@@ -1314,7 +1374,7 @@ export default function ChatlyUI() {
       
       console.log("🔔 === NEW MESSAGE NOTIFICATION DEBUG ===");
       console.log("🔔 New message received:", { content, receiverId, senderId, messageId });
-      console.log("🔔 Current activeChat:", activeChat);
+      console.log("🔔 Current activeChat:", activeChatRef.current);
       console.log("🔔 Current session user:", sessionData?.user?._id);
       console.log("🔔 Is group message:", senderId.startsWith('group_'));
       console.log("🔔 Processed messages count:", processedMessages.size);
@@ -1327,14 +1387,16 @@ export default function ChatlyUI() {
         return;
       }
 
-      // Additional check: if we're in the same chat, don't increment notifications
-      if (activeChat === senderId) {
+      // If we're in the same chat (direct or group), don't increment notifications
+      if (activeChatRef.current === senderId) {
         console.log("🔔 User is actively chatting with sender, not incrementing count");
         return;
       }
 
       // Check if notifications are muted for this chat
-      const chatId = senderId.startsWith('group_') ? senderId : receiverId;
+      // For direct messages, use senderId (friend's id);
+      // for groups, senderId already carries `group_<id>`
+      const chatId = senderId;
       const muteKey = `muted_${chatId}`;
       const isMuted = localStorage.getItem(muteKey) === 'true';
       
@@ -1345,6 +1407,12 @@ export default function ChatlyUI() {
 
       // Only process if the message is for the current user
       if (receiverId === sessionData?.user?._id) {
+        // Prevent duplicate events from double-emits/race conditions
+        const dedupeKey = `${senderId}-${receiverId}-${content}`;
+        if (isDuplicateNotification(dedupeKey)) {
+          console.log("🔔 Duplicate notification suppressed for:", dedupeKey);
+          return;
+        }
         // Prevent duplicate processing
         if (processingNotification.current) {
           console.log("🔔 Notification already being processed, skipping...");
@@ -1451,7 +1519,8 @@ export default function ChatlyUI() {
           const response = await fetch(`/api/groups/get-messages?groupId=${groupId}`)
           const data = await response.json()
           if (data.success) {
-            setMessages(data.data.messages || [])
+            const filtered = filterClearedMessages(data.data.messages || [], id)
+            setMessages(filtered)
           }
         } catch (err) {
           console.error('Failed to load group messages:', err)
@@ -1469,7 +1538,8 @@ export default function ChatlyUI() {
            const elapsedTime = Date.now() - startTime;
            const remainingTime = Math.max(1000 - elapsedTime, 0);
           setTimeout(() => {
-            setMessages(msgs);
+            const filtered = filterClearedMessages(msgs || [], id)
+            setMessages(filtered);
             setIsLoading(false);
           },remainingTime);
       })
@@ -1498,11 +1568,13 @@ export default function ChatlyUI() {
       // For messages with attachments, copy the attachment URL
       const attachmentUrl = message.attachment.secureUrl || message.attachment.url
       await navigator.clipboard.writeText(attachmentUrl)
-      toast.success('Attachment URL copied to clipboard')
+      setCopiedMessageId(message._id)
+      setTimeout(() => setCopiedMessageId(null), 1500)
     } else {
       // For text messages, copy the content
       await navigator.clipboard.writeText(message.content)
-      toast.success('Message copied to clipboard')
+      setCopiedMessageId(message._id)
+      setTimeout(() => setCopiedMessageId(null), 1500)
     }
   }
 
@@ -1544,7 +1616,6 @@ export default function ChatlyUI() {
 const SignOut = () => {
   console.log("signout called")
   signOut({callbackUrl:"http://localhost:3001/sign-in"})
-  toast.success("Signed out successfully")
 }
 
 
@@ -1706,7 +1777,14 @@ useEffect(() => {
         });
         
         if (response.data.success) {
+          // Optimistically clear in UI and remember clear time so old history stays hidden
           setMessages([]);
+          const now = Date.now();
+          setClearedAtMap(prev => {
+            const next = { ...prev, [receiverId.current]: now };
+            try { sessionStorage.setItem('clearedAtMap', JSON.stringify(next)) } catch {}
+            return next;
+          })
           toast.success("All messages cleared successfully");
         } else {
           toast.error("Failed to clear messages");
@@ -1717,6 +1795,17 @@ useEffect(() => {
       toast.error("Failed to clear messages");
     }
   };
+
+  // Helper: filter messages that were sent after the user's last clear timestamp for this chat
+  const filterClearedMessages = (list, id) => {
+    if (!id || !list?.length) return list || [];
+    const clearedAt = clearedAtMap[id];
+    if (!clearedAt) return list;
+    return (list || []).filter(m => {
+      const t = m?.createdAt ? new Date(m.createdAt).getTime() : (m?.timestamp || 0);
+      return !t || t > clearedAt;
+    })
+  }
 
   // User-friendly export chat functionality
   const exportChat = () => {
@@ -1839,18 +1928,8 @@ useEffect(() => {
     }
   }, [showEmojiPicker])
 
-  // Load groups and notifications once session is ready
+  // Load notifications once session is ready (groups now loaded with friends)
   useEffect(() => {
-    const loadGroups = async () => {
-      try {
-        const res = await fetch('/api/groups/list')
-        const data = await res.json()
-        if (data?.success) {
-          setGroups(deduplicateGroups(data.data.groups || []))
-        }
-      } catch (e) {}
-    }
-    
     const loadNotifications = async () => {
       try {
         const res = await fetch('/api/notifications')
@@ -1883,7 +1962,6 @@ useEffect(() => {
     }
     
     if (sessionData?.user?._id) {
-      loadGroups()
       loadNotifications()
     }
   }, [sessionData?.user?._id])
@@ -1960,10 +2038,15 @@ useEffect(() => {
     }
     const onGroupDeleted = (payload) => {
       const groupId = typeof payload === 'string' ? payload : payload?.groupId
+      const groupIdStr = groupId?.toString()
       const deletedBy = typeof payload === 'object' ? payload?.deletedBy : undefined
-      setGroups(prev => prev.filter(g => g._id !== groupId))
+      // Remove the group by id, normalizing both sides to string
+      setGroups(prev => prev.filter(g => {
+        const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+        return gid !== groupIdStr
+      }))
       // If we're currently in the deleted group, navigate away
-      if (receiverId.current === `group_${groupId}`) {
+      if (receiverId.current === `group_${groupIdStr}`) {
         receiverId.current = null
         setMessages([])
       }
@@ -2796,30 +2879,31 @@ useEffect(() => {
             </div>
 
             <div className="border-t border-gray-300 p-3 bg-gray-200">
-              <div
+              {/* Sign Out moved to top */}
+              <div 
+                onClick={SignOut}
                 className="flex items-center justify-between cursor-pointer hover:bg-gray-300 p-2 rounded"
-                onClick={() => router.replace("/remove-friend")}
               >
                 <div className="flex items-center">
-                  <UserMinus size={20} className="text-gray-600 mr-2" />
-                  <span className="text-sm font-medium">Remove Friend</span>
+                  <LogOut size={20} className="text-gray-600 mr-2" />
+                  <span className="text-sm font-medium">Sign Out</span>
+                </div>
+              </div>
+
+              {/* Delete Account button */}
+              <div
+                className="flex items-center justify-between cursor-pointer hover:bg-red-100 p-2 rounded mt-1"
+                onClick={() => setShowDeleteAccountModal(true)}
+              >
+                <div className="flex items-center">
+                  <Trash size={20} className="text-red-600 mr-2" />
+                  <span className="text-sm font-medium text-red-700">Delete Account</span>
                 </div>
               </div>
 
             {/* Hidden input for file selection */}
             <input ref={fileInputRef} type="file" className="hidden" onChange={handlePickFile} />
-
-              <div 
-                onClick={SignOut}
-                className="flex items-center justify-between cursor-pointer hover:bg-gray-300 p-2 rounded mt-1"
-              >
-                <div className="flex items-center">
-                  <Button onClick={SignOut}>
-                    <LogOut size={20} className="text-gray-600 mr-2" />
-                  </Button>
-                  <span className="text-sm font-medium">Sign Out</span>
-                </div>
-              </div>
+            
 
               {showFriends && (
                 <div className="mt-2 bg-white rounded-lg p-3 shadow">
@@ -2850,7 +2934,7 @@ useEffect(() => {
                               </div>
                             ) : (
                               <Avatar 
-                                key={`${friend.friendid}-${friend.friendprofilepicture}-${avatarRefreshKey}-${forceRerender}-${Date.now()}`}
+                                key={`friend-${friend.friendid}`}
                                 user={{ 
                                   username: friend.friendusername, 
                                   profilePicture: friend.friendprofilepicture 
@@ -2951,34 +3035,42 @@ useEffect(() => {
                         </div>
                       </div>
                       <div className="p-5 border-t bg-gray-50 flex items-center justify-end space-x-2">
-                        <button className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100" onClick={()=> setShowCreateGroup(false)}>Cancel</button>
-                        <button className="px-4 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700" onClick={async ()=>{
+            <button className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100 disabled:opacity-60 disabled:cursor-not-allowed" disabled={isCreatingGroup} onClick={()=> setShowCreateGroup(false)}>Cancel</button>
+            <button className="px-4 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:from-purple-700 hover:to-pink-700 disabled:opacity-60 disabled:cursor-not-allowed" disabled={isCreatingGroup} onClick={async ()=>{
                           setGroupSubmitAttempted(true)
                           if(!newGroupName.trim() || selectedInviteeIds.length === 0) return;
-                          const res = await fetch('/api/groups/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:newGroupName})})
-                          const data = await res.json()
-                          if(data?.success){
-                            setGroups((prev) => {
-                              const newGroups = [data.data.group, ...prev]
-                              return deduplicateGroups(newGroups)
-                            })
-                            // send invites
-                            await Promise.all(selectedInviteeIds.map((uid)=> fetch('/api/groups/invite',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({groupId: data.data.group._id, inviteeId: uid})})))
-                            // Optionally show a toast here if available
-                            setNewGroupName("")
-                            setSelectedInviteeIds([])
-                            setGroupSubmitAttempted(false)
-                            setGroupSearch("")
-                            setGroupFilteredFriends([])
-                            setShowCreateGroup(false)
-                          } else {
-                            if (data?.statusCode === 409 || (data?.message || '').toLowerCase().includes('exists')) {
-                              setGroupNameServerError(data?.message || 'Group name already exists. Choose another name.')
+                          try {
+                            setIsCreatingGroup(true)
+                            const res = await fetch('/api/groups/create',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:newGroupName})})
+                            const data = await res.json()
+                            if(data?.success){
+                              setGroups((prev) => {
+                                const newGroups = [data.data.group, ...prev]
+                                return deduplicateGroups(newGroups)
+                              })
+                              // send invites
+                              await Promise.all(selectedInviteeIds.map((uid)=> fetch('/api/groups/invite',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({groupId: data.data.group._id, inviteeId: uid})})))
+                              // cleanup + UX
+                              setNewGroupName("")
+                              setSelectedInviteeIds([])
+                              setGroupSubmitAttempted(false)
+                              setGroupSearch("")
+                              setGroupFilteredFriends([])
+                              setShowCreateGroup(false)
+                              toast.success(`Created group "${data.data.group?.name || newGroupName}"`)
                             } else {
-                              alert(data?.message || 'Failed to create group')
+                              if (data?.statusCode === 409 || (data?.message || '').toLowerCase().includes('exists')) {
+                                setGroupNameServerError(data?.message || 'Group name already exists. Choose another name.')
+                              } else {
+                                toast.error(data?.message || 'Failed to create group')
+                              }
                             }
+                          } catch (e) {
+                            toast.error('Failed to create group')
+                          } finally {
+                            setIsCreatingGroup(false)
                           }
-                        }}>Create</button>
+                        }}>{isCreatingGroup ? 'Creating...' : 'Create'}</button>
                       </div>
                     </div>
                   </div>
@@ -3005,9 +3097,33 @@ useEffect(() => {
                       />
                     </div>
                     <div className="flex items-center">
-                      <div className="w-10 h-10 rounded-full bg-gray-400 flex items-center justify-center mr-3">
-                        <User size={20} className="text-white" />
-                      </div>
+                      {receiverId.current?.startsWith('group_') ? (
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center mr-3">
+                          <Users size={20} className="text-white" />
+                        </div>
+                      ) : (() => {
+                        const currentFriend = friends.find(f => f.friendid === receiverId.current);
+                        const isAI = currentFriend?.friendusername?.toLowerCase().includes('ai');
+                        
+                        if (isAI) {
+                          return (
+                            <div className="w-10 h-10 rounded-full bg-gradient-to-r from-indigo-500 to-purple-600 flex items-center justify-center mr-3">
+                              <Bot size={20} className="text-white" />
+                            </div>
+                          );
+                        }
+                        
+                        return (
+                          <Avatar 
+                            user={{
+                              username: currentFriend?.friendusername || 'Friend',
+                              profilePicture: currentFriend?.friendprofilepicture
+                            }}
+                            size="md"
+                            className="mr-3"
+                          />
+                        );
+                      })()}
                      <div>
   <h3 className="font-semibold text-sm text-gray-800">
     {receiverId.current?.startsWith('group_') 
@@ -3316,7 +3432,13 @@ useEffect(() => {
                           {receiverId.current?.startsWith('group_') && (() => {
                             const groupId = receiverId.current.replace('group_', '');
                             const currentGroup = groups.find(g => g._id === groupId);
-                            const isGroupOwner = currentGroup?.ownerId?.toString() === sessionData?.user?._id;
+                            // ownerId can be populated object or raw ObjectId/string; normalize both sides
+                            const ownerIdValue = currentGroup?.ownerId && typeof currentGroup.ownerId === 'object'
+                              ? (currentGroup.ownerId._id || currentGroup.ownerId)
+                              : currentGroup?.ownerId;
+                            const ownerIdStr = ownerIdValue ? ownerIdValue.toString() : null;
+                            const userIdStr = sessionData?.user?._id ? sessionData.user._id.toString() : null;
+                            const isGroupOwner = !!ownerIdStr && !!userIdStr && ownerIdStr === userIdStr;
                             
                             if (isGroupOwner) {
                               // Group Owner - Show Delete Group option
@@ -3491,13 +3613,19 @@ useEffect(() => {
                               <div className="mr-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                                 <button 
                                   onClick={() => copyMessage(message)}
-                                  className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-full shadow-sm transform hover:scale-110 transition-all duration-200"
-                                  title="Copy message"
+                                  className={`p-1.5 rounded-full shadow-sm transform hover:scale-110 transition-all duration-200 ${copiedMessageId === message._id ? 'bg-green-500' : 'bg-blue-500 hover:bg-blue-600'}`}
+                                  title={copiedMessageId === message._id ? 'Copied!' : 'Copy message'}
                                 >
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                                  </svg>
+                                  {copiedMessageId === message._id ? (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M20 6L9 17l-5-5" />
+                                    </svg>
+                                  ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                    </svg>
+                                  )}
                                 </button>
                               </div>
                             )}
@@ -3901,13 +4029,19 @@ useEffect(() => {
                               <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-row space-x-1 items-center">
                                 <button 
                                   onClick={() => copyMessage(message)}
-                                  className="p-1.5 bg-blue-500 hover:bg-blue-600 rounded-full shadow-sm transform hover:scale-110 transition-all duration-200"
-                                  title="Copy message"
+                                  className={`p-1.5 rounded-full shadow-sm transform hover:scale-110 transition-all duration-200 ${copiedMessageId === message._id ? 'bg-green-500' : 'bg-blue-500 hover:bg-blue-600'}`}
+                                  title={copiedMessageId === message._id ? 'Copied!' : 'Copy message'}
                                 >
-                                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                                  </svg>
+                                  {copiedMessageId === message._id ? (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M20 6L9 17l-5-5" />
+                                    </svg>
+                                  ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                    </svg>
+                                  )}
                                 </button>
                                 <button 
                                   onClick={() => deleteMessage(message._id)}
@@ -4374,7 +4508,7 @@ useEffect(() => {
     {showDeleteGroupModal && (
       <div className="fixed inset-0 z-[1000] flex items-center justify-center">
         {/* Backdrop */}
-        <div aria-hidden onClick={() => setShowDeleteGroupModal(false)} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
+        <div aria-hidden onClick={() => { if (!isDeletingGroup) setShowDeleteGroupModal(false) }} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
         {/* Modal */}
         <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-95 animate-in zoom-in-95">
           {/* Header */}
@@ -4408,15 +4542,17 @@ useEffect(() => {
           <div className="px-6 py-4 bg-gray-50 rounded-b-2xl flex space-x-3">
             <button
               onClick={() => setShowDeleteGroupModal(false)}
-              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium"
+              disabled={isDeletingGroup}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium disabled:opacity-60 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               onClick={confirmDeleteGroup}
-              className="flex-1 px-4 py-2 bg-gradient-to-r from-red-500 to-pink-600 text-white rounded-lg hover:from-red-600 hover:to-pink-700 transition-all duration-200 font-medium shadow-lg"
+              disabled={isDeletingGroup}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-red-500 to-pink-600 text-white rounded-lg hover:from-red-600 hover:to-pink-700 transition-all duration-200 font-medium shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Delete Group
+              {isDeletingGroup ? 'Deleting...' : 'Delete Group'}
             </button>
           </div>
         </div>
@@ -4427,7 +4563,7 @@ useEffect(() => {
     {showLeaveGroupModal && (
       <div className="fixed inset-0 z-[1000] flex items-center justify-center">
         {/* Backdrop */}
-        <div aria-hidden onClick={() => setShowLeaveGroupModal(false)} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
+        <div aria-hidden onClick={() => { if (!isLeavingGroup) setShowLeaveGroupModal(false) }} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
         {/* Modal */}
         <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-95 animate-in zoom-in-95">
           {/* Header */}
@@ -4461,15 +4597,17 @@ useEffect(() => {
           <div className="px-6 py-4 bg-gray-50 rounded-b-2xl flex space-x-3">
             <button
               onClick={() => setShowLeaveGroupModal(false)}
-              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium"
+              disabled={isLeavingGroup}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium disabled:opacity-60 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               onClick={confirmLeaveGroup}
-              className="flex-1 px-4 py-2 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-lg hover:from-orange-600 hover:to-red-700 transition-all duration-200 font-medium shadow-lg"
+              disabled={isLeavingGroup}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-lg hover:from-orange-600 hover:to-red-700 transition-all duration-200 font-medium shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Leave Group
+              {isLeavingGroup ? 'Leaving...' : 'Leave Group'}
             </button>
           </div>
         </div>
@@ -4514,7 +4652,8 @@ useEffect(() => {
           <div className="px-6 py-4 bg-gray-50 rounded-b-2xl flex space-x-3">
             <button
               onClick={() => setShowRemoveConfirmModal(false)}
-              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium"
+              disabled={removeLoading[friendToRemove?.id]}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium disabled:opacity-60 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
@@ -4543,6 +4682,13 @@ useEffect(() => {
       const currentGroup = groups.find(g => g._id === groupId);
       const groupMembers = currentGroup?.members || [];
       
+      console.log('Group Members Debug:', {
+        groupId,
+        currentGroup,
+        groupMembers,
+        membersCount: groupMembers.length
+      });
+      
       return (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center">
           {/* Backdrop */}
@@ -4553,9 +4699,6 @@ useEffect(() => {
             <div className="bg-gradient-to-r from-blue-500 to-indigo-600 px-6 py-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-3">
-                  <div className="p-2 bg-white bg-opacity-20 rounded-full">
-                    <Users size={20} className="text-white" />
-                  </div>
                   <div>
                     <h3 className="text-white text-lg font-semibold">Group Members</h3>
                     <p className="text-blue-100 text-sm">{groupMembers.length} members</p>
@@ -4576,19 +4719,22 @@ useEffect(() => {
             <div className="p-6 max-h-96 overflow-y-auto">
               <div className="space-y-3">
                 {groupMembers.map((member, index) => (
-                  <div key={member.userId || index} className="flex items-center space-x-4 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors duration-200">
-                    <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center shadow-lg">
-                      <span className="text-white font-semibold text-lg">
-                        {member.username?.charAt(0)?.toUpperCase() || 'U'}
-                      </span>
-                    </div>
+                  <div key={member.userId?._id || member.userId || index} className="flex items-center space-x-4 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors duration-200">
+                    <Avatar 
+                      user={{
+                        username: member.userId?.username || member.username || 'Unknown User',
+                        profilePicture: member.userId?.profilePicture || member.profilePicture
+                      }}
+                      size="lg"
+                      className="shadow-lg"
+                    />
                     <div className="flex-1">
-                      <h4 className="font-semibold text-gray-800">{member.username || 'Unknown User'}</h4>
+                      <h4 className="font-semibold text-gray-800">{member.userId?.username || member.username || 'Unknown User'}</h4>
                       <p className="text-sm text-gray-500">
-                        {member.userId?.toString() === currentGroup?.ownerId?.toString() ? 'Group Owner' : 'Member'}
+                        {member.userId?._id?.toString() === currentGroup?.ownerId?._id?.toString() ? 'Group Owner' : 'Member'}
                       </p>
                     </div>
-                    {member.userId?.toString() === currentGroup?.ownerId?.toString() && (
+                    {member.userId?._id?.toString() === currentGroup?.ownerId?._id?.toString() && (
                       <div className="px-3 py-1 bg-gradient-to-r from-yellow-400 to-orange-500 text-white text-xs font-medium rounded-full">
                         Owner
                       </div>
@@ -4611,6 +4757,46 @@ useEffect(() => {
         </div>
       );
     })()}
+
+    {/* Delete Account Confirmation Modal */}
+    {showDeleteAccountModal && (
+      <div className="fixed inset-0 z-[1000] flex items-center justify-center">
+        <div aria-hidden onClick={() => { if (!deleteAccountLoading) setShowDeleteAccountModal(false) }} className="absolute inset-0 bg-black/30 backdrop-blur-sm transition-opacity" />
+        <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden">
+          <div className="bg-gradient-to-r from-red-500 to-pink-600 px-6 py-4">
+            <h3 className="text-white text-lg font-semibold">Delete Account</h3>
+            <p className="text-red-100 text-sm">This will delete all your data. This action is irreversible.</p>
+          </div>
+          <div className="p-6 space-y-3">
+            <p className="text-gray-700">Are you sure you want to permanently delete your account? All your conversations, messages, groups and friendships will be removed. Your friends will receive a notification about this action.</p>
+          </div>
+          <div className="px-6 py-4 bg-gray-50 border-t flex space-x-3">
+            <button onClick={() => setShowDeleteAccountModal(false)} className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">Cancel</button>
+            <button onClick={async () => {
+              if (deleteAccountLoading) return;
+              try {
+                setDeleteAccountLoading(true)
+                const res = await fetch('/api/delete-account', { method: 'POST' })
+                const data = await res.json()
+                if (data?.success) {
+                  // Show only message deletion toast; avoid sign-out success toast
+                  toast.success('All messages deleted')
+                  // Sign out after deletion (silent)
+                  SignOut()
+                } else {
+                  toast.error(data?.message || 'Failed to delete account')
+                }
+              } catch (e) {
+                toast.error('Failed to delete account')
+              } finally {
+                setDeleteAccountLoading(false)
+                setShowDeleteAccountModal(false)
+              }
+            }} className="flex-1 px-4 py-2 bg-gradient-to-r from-red-500 to-pink-600 text-white rounded-lg hover:from-red-600 hover:to-pink-700 disabled:opacity-50" disabled={deleteAccountLoading}>{deleteAccountLoading ? 'Deleting...' : 'Delete Account'}</button>
+          </div>
+        </div>
+      </div>
+    )}
 
     {/* Add Friend Modal */}
     {showAddFriendModal && (
@@ -4726,7 +4912,7 @@ useEffect(() => {
                     <div className="flex items-center space-x-4">
                       {/* Avatar */}
                       <Avatar 
-                        key={`${user._id}-${user.profilePicture}-${avatarRefreshKey}-${forceRerender}`}
+                        key={`user-${user._id}`}
                         user={user} 
                         size="lg" 
                         showStatus={true} 
@@ -4826,15 +5012,17 @@ useEffect(() => {
 
     {/* Profile Modal */}
     {showProfileModal && (
-      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowProfileModal(false)}>
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => { if (!isUpdatingProfile) setShowProfileModal(false) }}>
         <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-100" onClick={(e) => e.stopPropagation()}>
           {/* Modal Header */}
           <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-t-2xl p-6 text-white">
             <div className="flex items-center justify-between">
               <h2 className="text-2xl font-bold">Profile Settings</h2>
               <button
-                onClick={() => setShowProfileModal(false)}
-                className="text-white hover:text-gray-200 transition-colors"
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!isUpdatingProfile) setShowProfileModal(false) }}
+                disabled={isUpdatingProfile}
+                className="text-white hover:text-gray-200 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                type="button"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -4847,22 +5035,25 @@ useEffect(() => {
           <div className="p-6 space-y-6">
             {/* Profile Picture Section */}
             <div className="flex flex-col items-center space-y-4">
-              <div className="relative">
-                {profilePicturePreview ? (
+              <div key={forceRerender} className="relative">
+                {console.log('Profile Modal Debug:', { profilePicturePreview, profilePicture, shouldRemoveProfilePicture })}
+                {profilePicturePreview && profilePicturePreview !== null && !shouldRemoveProfilePicture ? (
                   <div className="relative">
                     <img
+                      key={`preview-${forceRerender}`}
                       src={profilePicturePreview}
                       alt="Profile preview"
                       className="w-32 h-32 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
                     />
                     <button
-                      onClick={handleRemoveProfilePicture}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveProfilePicture() }}
+                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors cursor-pointer"
+                      type="button"
                     >
                       ×
                     </button>
                   </div>
-                ) : getSafeProfilePictureUrl(sessionData?.user?.profilePicture) ? (
+                ) : getSafeProfilePictureUrl(sessionData?.user?.profilePicture) && !shouldRemoveProfilePicture ? (
                   <div className="relative">
                     <img
                       src={getSafeProfilePictureUrl(sessionData.user.profilePicture)}
@@ -4878,8 +5069,9 @@ useEffect(() => {
                       <User size={32} className="text-white" />
                     </div>
                     <button
-                      onClick={handleRemoveProfilePicture}
-                      className="absolute -top-2 -right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveProfilePicture() }}
+                      className="absolute -top-2 -right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors cursor-pointer"
+                      type="button"
                     >
                       ×
                     </button>
@@ -4943,7 +5135,8 @@ useEffect(() => {
             <div className="flex space-x-3 pt-4">
               <button
                 onClick={() => setShowProfileModal(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                disabled={isUpdatingProfile}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>

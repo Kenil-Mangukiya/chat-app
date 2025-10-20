@@ -11,6 +11,8 @@ export async function GET() {
 
   const groups = await groupModel
     .find({ "members.userId": session.user._id })
+    .populate('ownerId', 'username email profilePicture')
+    .populate('members.userId', 'username email profilePicture')
     .sort({ updatedAt: -1 })
 
   return response(200, { groups }, "Groups fetched", true)
