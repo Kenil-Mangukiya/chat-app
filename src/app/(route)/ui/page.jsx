@@ -65,6 +65,14 @@ export default function ChatlyUI() {
   const [activeUsers, setActiveUsers] = useState(new Set());
   const [friendsWithReadMessages, setFriendsWithReadMessages] = useState(new Set());
   const [friends, setFriends] = useState([]);
+  // Mobile navigation state
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  
+  // Mobile responsive state management
+  const [isMobileView, setIsMobileView] = useState(false);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(true);
+  // Three dots menu state
+  const [showChatOptionsMenu, setShowChatOptionsMenu] = useState(false);
   // Tracks when a chat was cleared for the current user; key is receiverId (friendId or group_*)
   const [clearedAtMap, setClearedAtMap] = useState(() => {
     try { return JSON.parse(typeof window !== 'undefined' ? (sessionStorage.getItem('clearedAtMap') || '{}') : '{}') } catch { return {} }
@@ -94,6 +102,70 @@ export default function ChatlyUI() {
   useEffect(() => {
     setSessionData(session);
   }, [session]);
+
+  // Screen size detection for responsive behavior
+  useEffect(() => {
+    const checkScreenSize = () => {
+      const isMobile = window.innerWidth < 768;
+      setIsMobileView(isMobile);
+      if (!isMobile) {
+        setShowMobileSidebar(true);
+        setIsMobileChatOpen(false);
+      }
+    };
+
+    checkScreenSize();
+    window.addEventListener('resize', checkScreenSize);
+    return () => window.removeEventListener('resize', checkScreenSize);
+  }, []);
+
+  // Close chat options menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showChatOptionsMenu && !event.target.closest('.chat-options-menu')) {
+        setShowChatOptionsMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showChatOptionsMenu]);
+
+  // Mobile view detection and responsive logic
+  useEffect(() => {
+    const checkMobileView = () => {
+      const isMobile = window.innerWidth < 768;
+      setIsMobileView(isMobile);
+      if (isMobile) {
+        setShowMobileSidebar(true);
+      }
+    };
+
+    checkMobileView();
+    window.addEventListener('resize', checkMobileView);
+    return () => window.removeEventListener('resize', checkMobileView);
+  }, []);
+
+  // Handle mobile chat selection
+  const handleMobileChatSelect = (chatId) => {
+    setActiveChat(chatId);
+    if (isMobileView) {
+      setShowMobileSidebar(false);
+    }
+  };
+
+  // Handle mobile back to sidebar
+  const handleMobileBackToSidebar = () => {
+    setActiveChat(null);
+    setMessages([]);
+    window.history.pushState(null, '', '/ui');
+    receiverId.current = null;
+    setNewMessageCounts({});
+    setTotalNewMessages(0);
+    if (isMobileView) {
+      setShowMobileSidebar(true);
+    }
+  };
 
   // Listen for session update events
   useEffect(() => {
@@ -1851,7 +1923,7 @@ export default function ChatlyUI() {
   const onClick = async (id) => {
     if (id) {
       setIsLoading(true)
-      setActiveChat(id);
+      handleMobileChatSelect(id);
       const startTime = Date.now();
       window.history.pushState(null, '', `/ui?receiverId=${id}`);
       receiverId.current = id;
@@ -2888,9 +2960,13 @@ useEffect(() => {
       <ChatlyLoader message="Loading your conversations..." />
     ) : (
       <>
-        <div className="flex h-screen bg-gray-100 overflow-hidden ">
-          <div className="w-1/3 flex flex-col border-r border-gray-300 bg-white">
-            <div className="flex justify-between items-center p-4 bg-gray-200">
+        <div className="flex h-screen bg-gray-100 overflow-hidden">
+          {/* Sidebar - Responsive width and visibility */}
+          <div className={`
+            ${isMobileView ? (showMobileSidebar ? 'w-full' : 'hidden') : 'w-1/3 md:w-1/3 lg:w-1/3'} 
+            flex flex-col border-r border-gray-300 bg-white transition-all duration-300
+          `}>
+            <div className="flex justify-between items-center p-3 sm:p-4 bg-gray-200">
               <div className="flex items-center">
                 <div className="relative group">
                   <Avatar 
@@ -3185,7 +3261,7 @@ useEffect(() => {
             </div>
 
             <div className="p-2 bg-gray-100">
-              <div className="flex items-center bg-white rounded-lg px-3 py-2">
+              <div className="flex items-center bg-white rounded-lg px-2 sm:px-3 py-2">
                 <Search size={18} className="mr-2 text-gray-500" />
                 <input
                   type="text"
@@ -3252,7 +3328,7 @@ useEffect(() => {
                 return sortedList.map(item => (
                   <div
                     key={item.id}
-                    className={`flex items-center px-3 py-3 hover:bg-gray-100 cursor-pointer border-b border-gray-200 transition-all duration-200 ${
+                    className={`flex items-center px-2 sm:px-3 py-2 sm:py-3 hover:bg-gray-100 cursor-pointer border-b border-gray-200 transition-all duration-200 ${
                       activeChat === item.id ? 'bg-gray-200' : ''
                     } ${item.isAI ? 'bg-gradient-to-r from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100' : ''}`}
                     onClick={() => onClick(item.id)}
@@ -3360,7 +3436,7 @@ useEffect(() => {
                             isAI ? 'bg-gradient-to-r from-indigo-50 to-purple-50' : ''
                           }`}
                           onClick={() => {
-                            setActiveChat(friend._id);
+                            handleMobileChatSelect(friend._id);
                             setShowFriends(false);
                           }}
                         >
@@ -3410,7 +3486,7 @@ useEffect(() => {
                 {showCreateGroup && (
                   <div className="fixed inset-0 z-[1000] flex items-center justify-center">
                     <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowCreateGroup(false)} />
-                    <div className="relative bg-white rounded-2xl shadow-2xl w-[92vw] max-w-[680px] overflow-hidden">
+                    <div className="relative bg-white rounded-2xl shadow-2xl w-11/12 sm:w-[92vw] max-w-[680px] max-h-[90vh] overflow-y-auto">
                       <div className="p-5 border-b bg-gradient-to-r from-purple-50 to-pink-50">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center space-x-2">
@@ -3419,7 +3495,7 @@ useEffect(() => {
                             </div>
                             <h3 className="font-semibold text-gray-800">Create Group</h3>
                           </div>
-                          <button className="text-gray-500 hover:text-gray-700" onClick={() => setShowCreateGroup(false)}>×</button>
+                          <button className="text-gray-500 hover:text-gray-700 p-2 hover:bg-gray-100 rounded-full transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center" onClick={() => setShowCreateGroup(false)}>×</button>
                         </div>
                       </div>
                       <div className="p-5 space-y-4">
@@ -3513,25 +3589,22 @@ useEffect(() => {
                   </div>
                 )}
 
-          <div className="w-2/3 flex flex-col">
+          {/* Chat Window - Responsive width and visibility */}
+          <div className={`
+            ${isMobileView ? (showMobileSidebar ? 'hidden' : 'w-full') : 'w-2/3 md:w-2/3 lg:w-2/3'} 
+            flex flex-col transition-all duration-300
+          `}>
             {activeChat ? (
               <>
-                <div className="flex justify-between items-center p-3 bg-gray-200 border-b border-gray-300">
+                <div className="flex justify-between items-center p-2 sm:p-3 bg-gray-200 border-b border-gray-300">
                   <div className="flex items-center">
                     <div className="mr-3">
-                      <ChevronLeft 
-                        size={24} 
-                        onClick={() => {
-                          setActiveChat(null);
-                          setMessages([]);
-                          window.history.pushState(null, '', '/ui');
-                          receiverId.current = null;
-                          // Clear all new message counts when going back to main screen
-                          setNewMessageCounts({});
-                          setTotalNewMessages(0);
-                        }} 
-                        className="text-gray-600 cursor-pointer" 
-                      />
+                      <button 
+                        onClick={handleMobileBackToSidebar}
+                        className="text-gray-600 cursor-pointer hover:text-gray-800 transition-colors p-2 hover:bg-gray-300 rounded-full min-w-[44px] min-h-[44px] flex items-center justify-center" 
+                      >
+                        <ChevronLeft size={24} />
+                      </button>
                     </div>
                     <div className="flex items-center">
                       {receiverId.current?.startsWith('group_') ? (
@@ -3801,11 +3874,17 @@ useEffect(() => {
                     })()}
 
                     {/* More Options with Enhanced Dropdown */}
-                    <div className="relative group">
-                      <MoreVertical size={20} className="text-gray-600 cursor-pointer hover:text-orange-500 transition-colors duration-200" />
+                    <div className="relative chat-options-menu">
+                      <button 
+                        onClick={() => setShowChatOptionsMenu(!showChatOptionsMenu)}
+                        className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                      >
+                        <MoreVertical size={20} className="text-gray-600 hover:text-orange-500 transition-colors duration-200" />
+                      </button>
                       
                       {/* Enhanced Dropdown Menu */}
-                      <div className="absolute top-8 right-0 bg-white border border-gray-200 rounded-xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-300 z-20 min-w-56 overflow-hidden transform scale-95 group-hover:scale-100">
+                      {showChatOptionsMenu && (
+                        <div className="absolute top-12 right-0 bg-white border border-gray-200 rounded-xl shadow-2xl z-20 min-w-56 sm:min-w-64 overflow-hidden transform transition-all duration-300 scale-95 animate-in zoom-in-95">
                         {/* Gradient Header */}
                         <div className="bg-gradient-to-r from-red-500 to-pink-600 px-4 py-3">
                           <h4 className="text-white text-sm font-semibold flex items-center">
@@ -3933,7 +4012,8 @@ useEffect(() => {
                         <div className="bg-gradient-to-r from-gray-100 to-gray-200 px-4 py-2">
                           <p className="text-xs text-gray-600 text-center">More options coming soon</p>
                         </div>
-                      </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -4574,20 +4654,25 @@ useEffect(() => {
                   )}
                 </div>
 
-                <div className="bg-gray-200 p-3 flex items-center space-x-2">
-                  <Smile 
-                    size={24} 
-                    className="text-gray-600 cursor-pointer" 
-                    onClick={() => setShowEmojiPicker((prev) => !prev)} 
-                  />
+                <div className="bg-gray-200 p-2 sm:p-3 flex items-center space-x-2">
+                  <button 
+                    type="button"
+                    onClick={() => setShowEmojiPicker((prev) => !prev)}
+                    className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200"
+                  >
+                    <Smile 
+                      size={24} 
+                      className="text-gray-600 hover:text-blue-500 transition-colors duration-200" 
+                    />
+                  </button>
                   {showEmojiPicker && (
                     <div ref={emojiPickerRef} className="absolute bottom-16 left-1/3 z-20">
                       <Picker data={data} onEmojiSelect={addEmoji} />
                     </div>
                   )}
                   <div className="relative">
-                    <button type="button" onClick={() => openFilePicker('image/*,video/*')}>
-                      <Paperclip size={24} className="text-gray-600 cursor-pointer hover:text-blue-500 transition-colors duration-200" />
+                    <button type="button" onClick={() => openFilePicker('image/*,video/*')} className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200">
+                      <Paperclip size={24} className="text-gray-600 hover:text-blue-500 transition-colors duration-200" />
                     </button>
                   </div>
                   {/* Upload Progress Indicator */}
@@ -4635,7 +4720,7 @@ useEffect(() => {
                   )}
 
 
-                  <div className="flex-1 bg-white rounded-full px-4 py-2">
+                  <div className="flex-1 bg-white rounded-full px-2 sm:px-4 py-2">
                     <FormProvider {...form}>
                       <form onSubmit={form.handleSubmit(onSubmit)} className="flex items-center space-x-2">
                         {/* Show preview inside input field */}
@@ -5318,17 +5403,17 @@ useEffect(() => {
           }
         }}
       >
-        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden transform transition-all duration-300 scale-95 animate-in zoom-in-95">
+        <div className="bg-white rounded-2xl shadow-2xl w-11/12 sm:w-full max-w-2xl max-h-[90vh] overflow-hidden transform transition-all duration-300 scale-95 animate-in zoom-in-95">
           {/* Modal Header */}
           <div className="bg-gradient-to-r from-blue-500 to-purple-600 p-6 text-white">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-2xl font-bold">Add Friends</h2>
+                <h2 className="text-xl sm:text-2xl font-bold">Add Friends</h2>
                 <p className="text-blue-100 mt-1">Discover and connect with people</p>
               </div>
               <button
                 onClick={handleCloseAddFriendModal}
-                className="text-white hover:text-gray-200 transition-colors p-2 rounded-full hover:bg-white hover:bg-opacity-20"
+                className="text-white hover:text-gray-200 transition-colors p-3 rounded-full hover:bg-white hover:bg-opacity-20 min-w-[44px] min-h-[44px] flex items-center justify-center"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -5523,15 +5608,15 @@ useEffect(() => {
     {/* Profile Modal */}
     {showProfileModal && (
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => { if (!isUpdatingProfile) setShowProfileModal(false) }}>
-        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 transform transition-all duration-300 scale-100" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-11/12 sm:w-full mx-4 sm:mx-6 max-h-[90vh] overflow-y-auto transform transition-all duration-300 scale-100" onClick={(e) => e.stopPropagation()}>
           {/* Modal Header */}
           <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-t-2xl p-6 text-white">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold">Profile Settings</h2>
+              <h2 className="text-xl sm:text-2xl font-bold">Profile Settings</h2>
               <button
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!isUpdatingProfile) setShowProfileModal(false) }}
                 disabled={isUpdatingProfile}
-                className="text-white hover:text-gray-200 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                className="text-white hover:text-gray-200 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed p-2 hover:bg-white hover:bg-opacity-20 rounded-full"
                 type="button"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
