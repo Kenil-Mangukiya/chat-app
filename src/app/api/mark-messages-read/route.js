@@ -22,11 +22,11 @@ export async function PUT(req) {
             return response(400, {}, "Sender ID is required", false)
         }
 
-        // Mark all messages from the sender as read
+        // Mark all messages sent by current user to the friend as read
         const result = await messageModel.updateMany(
             { 
-                senderid: senderId, 
-                receiverid: session.user._id,
+                senderid: session.user._id, 
+                receiverid: senderId,
                 readStatus: { $ne: { isRead: true } }
             },
             { 
@@ -37,10 +37,10 @@ export async function PUT(req) {
             }
         )
 
-        // Notify the sender that their messages have been read
+        // Notify the sender (current user) that their messages have been read by the friend
         if (result.modifiedCount > 0) {
-            emitToUser(senderId, "messages_read", {
-                receiverId: session.user._id,
+            emitToUser(session.user._id, "messages_read", {
+                receiverId: senderId,
                 readCount: result.modifiedCount
             })
         }

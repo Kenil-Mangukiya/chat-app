@@ -35,13 +35,7 @@ export function Avatar({
   // Get safe profile picture URL (handles local paths that cause 404s)
   const safeProfilePicture = getSafeProfilePictureUrl(rawProfileUrl)
   
-  // Debug logging
-  console.log('Avatar Debug:', {
-    username: user?.username,
-    originalUrl: rawProfileUrl,
-    safeUrl: safeProfilePicture,
-    showUserIcon: showUserIcon
-  })
+  // Debug logging removed to prevent excessive console output
 
   return (
     <div className={`relative ${className}`} onClick={onClick}>
@@ -54,13 +48,9 @@ export function Avatar({
             referrerPolicy="no-referrer"
             loading="lazy"
             onError={(e) => {
-              console.log('Image failed to load:', safeProfilePicture)
               // Fallback to user icon if image fails to load (404, network error, etc.)
               e.target.style.display = 'none'
               e.target.nextSibling.style.display = 'flex'
-            }}
-            onLoad={() => {
-              console.log('Image loaded successfully:', safeProfilePicture)
             }}
           />
           <div 

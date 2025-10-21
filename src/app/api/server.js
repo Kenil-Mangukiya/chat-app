@@ -151,7 +151,10 @@ app.prepare().then(async () => {
           updatedat: Date.now(),
         });
 
+        console.log("📤 EMITTING TO SENDER:", messageData.senderid, "MESSAGE:", newMessage._id);
         io.to(messageData.senderid).emit("send_message_to_sender", newMessage);
+        
+        console.log("📤 EMITTING TO RECEIVER:", messageData.receiverid, "MESSAGE:", newMessage._id);
         io.to(messageData.receiverid).emit("send_message_to_receiver", newMessage);
 
         // Emit new_message event for notifications (only to receiver)

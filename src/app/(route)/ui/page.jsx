@@ -62,6 +62,8 @@ export default function ChatlyUI() {
   const [isCheckingUsername, setIsCheckingUsername] = useState(false);
   const [usernameStatus, setUsernameStatus] = useState('');
   const [readMessages, setReadMessages] = useState(new Set());
+  const [activeUsers, setActiveUsers] = useState(new Set());
+  const [friendsWithReadMessages, setFriendsWithReadMessages] = useState(new Set());
   const [friends, setFriends] = useState([]);
   // Tracks when a chat was cleared for the current user; key is receiverId (friendId or group_*)
   const [clearedAtMap, setClearedAtMap] = useState(() => {
@@ -990,24 +992,73 @@ export default function ChatlyUI() {
 
   // Function to mark messages as read
   const markMessagesAsRead = async (senderId) => {
-    if (!senderId || !sessionData?.user?._id) return
+    console.log('🔵 MARKING MESSAGES AS READ:', { senderId, currentUser: sessionData?.user?._id });
+    
+    if (!senderId || !sessionData?.user?._id) {
+      console.log('❌ MISSING SENDER ID OR USER ID');
+      return;
+    }
+    
+    // Update local state immediately for instant UI feedback
+    setMessages(prevMessages => {
+      console.log('🔍 CURRENT MESSAGES BEFORE MARKING:', prevMessages.length, 'messages');
+      console.log('🔍 LOOKING FOR MESSAGES FROM:', sessionData.user._id, 'TO:', senderId);
+      
+      const updatedMessages = prevMessages.map(msg => {
+        if (msg.senderid === sessionData.user._id && msg.receiverid === senderId) {
+          console.log('✅ MARKING MESSAGE AS READ:', msg.content, '(ID:', msg._id, ')');
+          return { ...msg, readStatus: { isRead: true, readAt: new Date() } };
+        }
+        return msg;
+      });
+      
+      const readCount = updatedMessages.filter(m => m.readStatus?.isRead).length;
+      console.log('📝 UPDATED MESSAGES COUNT:', readCount);
+      
+      if (readCount === 0) {
+        console.log('⚠️ NO MESSAGES FOUND TO MARK AS READ');
+        console.log('📊 ALL MESSAGES:', prevMessages.map(m => ({
+          id: m._id,
+          content: m.content,
+          senderid: m.senderid,
+          receiverid: m.receiverid
+        })));
+      }
+      
+      return updatedMessages;
+    });
     
     try {
-      const response = await axios.put('/api/mark-messages-read', { senderId })
-      if (response.data.success) {
-        // Update local state to show blue ticks
+      console.log('🌐 CALLING API TO MARK MESSAGES AS READ...');
+      const response = await axios.put('/api/mark-messages-read', { senderId });
+      console.log('📡 API RESPONSE:', response.data);
+      
+      if (!response.data.success) {
+        console.log('❌ API FAILED, REVERTING LOCAL STATE');
+        // If API fails, revert the local state
         setMessages(prevMessages => 
           prevMessages.map(msg => 
             msg.senderid === senderId && msg.receiverid === sessionData.user._id
-              ? { ...msg, readStatus: { isRead: true, readAt: new Date() } }
+              ? { ...msg, readStatus: { isRead: false, readAt: null } }
               : msg
           )
         )
+      } else {
+        console.log('✅ API SUCCESS, READ STATUS PERSISTED');
       }
     } catch (error) {
-      console.error('Error marking messages as read:', error)
+      console.error('❌ ERROR MARKING MESSAGES AS READ:', error);
+      // Revert local state on error
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
+          msg.senderid === senderId && msg.receiverid === sessionData.user._id
+            ? { ...msg, readStatus: { isRead: false, readAt: null } }
+            : msg
+        )
+      )
     }
   }
+
 
   // Function to format date for display
   const formatMessageDate = (date) => {
@@ -1164,10 +1215,47 @@ export default function ChatlyUI() {
 
   // Mark messages as read when chat is opened (only for single friend chats)
   useEffect(() => {
+    console.log('🚀 CHAT OPENED:', { activeChat, isGroup: activeChat?.startsWith('group_'), userId: sessionData?.user?._id });
+    
     if (activeChat && !activeChat.startsWith('group_') && sessionData?.user?._id) {
-      // Mark messages as read when opening a friend chat
-      markMessagesAsRead(activeChat)
+      console.log('👤 OPENING FRIEND CHAT - MARKING MESSAGES AS READ');
+      
+      // Emit that user joined the chat
+      socket.emit('user_joined_chat', { 
+        userId: sessionData.user._id, 
+        chatId: activeChat 
+      });
+      console.log('📡 EMITTED user_joined_chat');
+      
+      // Note: markMessagesAsRead will be called after messages are loaded
+      
+      // Also add the current user to active users for this chat
+      setActiveUsers(prev => {
+        const newSet = new Set([...prev, sessionData.user._id]);
+        console.log('👥 ACTIVE USERS UPDATED:', Array.from(newSet));
+        return newSet;
+      });
+    } else if (activeChat && activeChat.startsWith('group_')) {
+      console.log('👥 OPENING GROUP CHAT');
+      // For group chats, just emit join
+      socket.emit('user_joined_chat', { 
+        userId: sessionData?.user?._id, 
+        chatId: activeChat 
+      });
+      console.log('📡 EMITTED user_joined_chat for group');
     }
+  }, [activeChat, sessionData?.user?._id])
+
+  // Clean up when user leaves chat
+  useEffect(() => {
+    return () => {
+      if (activeChat && sessionData?.user?._id) {
+        socket.emit('user_left_chat', { 
+          userId: sessionData.user._id, 
+          chatId: activeChat 
+        });
+      }
+    };
   }, [activeChat, sessionData?.user?._id])
 
   
@@ -1276,36 +1364,45 @@ export default function ChatlyUI() {
     socket.emit("status", { receiverId: receiverId.current });
 
     // Get friends list and groups simultaneously
-      socket.emit("get_friends", userId);
-      socket.on("friend_list", (friendData) => {
-        console.log("Friend list received:", friendData)
-        
-        // Deduplicate friends by friendid to prevent duplicate React keys
-        const uniqueFriends = friendData.reduce((acc, friend) => {
-          const friendId = friend.friendid.toString()
-          if (!acc.some(f => f.friendid.toString() === friendId)) {
-            acc.push(friend)
-          }
-          return acc
-        }, [])
-        
-        console.log("Deduplicated friends:", uniqueFriends.length, "from", friendData.length)
-        setFriends(uniqueFriends);
-      });
-
-      // Load groups immediately alongside friends
-      const loadGroups = async () => {
+      console.log('🚀 LOADING FRIENDS AND GROUPS IN PARALLEL...');
+      
+      // Load friends and groups in parallel for faster loading
+      const loadFriendsAndGroups = async () => {
         try {
-          const res = await fetch('/api/groups/list')
-          const data = await res.json()
+          // Load friends via socket
+          socket.emit("get_friends", userId);
+          socket.on("friend_list", (friendData) => {
+            console.log("👥 FRIEND LIST RECEIVED:", friendData.length, "friends");
+            
+            // Deduplicate friends by friendid to prevent duplicate React keys
+            const uniqueFriends = friendData.reduce((acc, friend) => {
+              const friendId = friend.friendid.toString()
+              if (!acc.some(f => f.friendid.toString() === friendId)) {
+                acc.push(friend)
+              }
+              return acc
+            }, [])
+            
+            console.log("✅ DEDUPLICATED FRIENDS:", uniqueFriends.length, "from", friendData.length);
+            setFriends(uniqueFriends);
+          });
+
+          // Load groups via API
+          console.log('📡 LOADING GROUPS...');
+          const res = await fetch('/api/groups/list');
+          const data = await res.json();
           if (data?.success) {
-            setGroups(deduplicateGroups(data.data.groups || []))
+            console.log('✅ GROUPS LOADED:', data.data.groups?.length || 0, 'groups');
+            setGroups(deduplicateGroups(data.data.groups || []));
+          } else {
+            console.log('❌ GROUPS LOADING FAILED:', data);
           }
         } catch (e) {
-          console.error('Error loading groups:', e)
+          console.error('❌ ERROR LOADING FRIENDS/GROUPS:', e);
         }
-      }
-      loadGroups();
+      };
+      
+      loadFriendsAndGroups();
 
     // Ensure AI friend is added for existing users
     const ensureAiFriend = async () => {
@@ -1452,7 +1549,7 @@ export default function ChatlyUI() {
     });
 
     socket.on("send_message_to_receiver", (message) => {
-      console.log("🔍 RECEIVED MESSAGE:", {
+      console.log("🔍 RECEIVED MESSAGE TO RECEIVER:", {
         messageSender: message.senderid,
         messageReceiver: message.receiverid,
         currentUser: sessionData?.user?._id,
@@ -1469,7 +1566,33 @@ export default function ChatlyUI() {
         (message.receiverid === receiverId.current && message.senderid === sessionData?.user?._id)
       )) {
         console.log("✅ ADDING MESSAGE TO CHAT");
-      setMessages((prev) => [...prev, message]);
+        
+        // If the current user is the receiver and they're actively in the chat, mark the message as read immediately
+        if (message.senderid === receiverId.current && message.receiverid === sessionData?.user?._id) {
+          console.log('🔄 MARKING NEW MESSAGE AS READ IMMEDIATELY:', message._id);
+          message.readStatus = { isRead: true, readAt: new Date() };
+          // Also call the API to persist the read status
+          markMessagesAsRead(message.senderid);
+        }
+        
+        setMessages((prev) => {
+          const newMessages = [...prev, message];
+          
+          // If this is a message sent by the current user and the receiver is active, 
+          // immediately mark the user's previous messages as read
+          if (message.senderid === sessionData?.user?._id && message.receiverid === receiverId.current) {
+            console.log('🔄 MARKING USER MESSAGES AS READ FOR NEW MESSAGE');
+            return newMessages.map(msg => {
+              if (msg.senderid === sessionData?.user?._id && msg.receiverid === receiverId.current) {
+                console.log('✅ TURNING USER MESSAGE BLUE:', msg.content, '(ID:', msg._id, ')');
+                return { ...msg, readStatus: { isRead: true, readAt: new Date() } };
+              }
+              return msg;
+            });
+          }
+          
+          return newMessages;
+        });
       } else {
         console.log("❌ IGNORING MESSAGE - NOT FOR CURRENT CHAT");
       }
@@ -1478,14 +1601,50 @@ export default function ChatlyUI() {
     // Listen for messages read notifications
     socket.on("messages_read", (data) => {
       console.log("📖 MESSAGES READ:", data);
+      console.log("🔍 UPDATING MESSAGES FOR SENDER:", sessionData?.user?._id, "RECEIVER:", data.receiverId);
+      
       // Update messages to show blue ticks
-      setMessages(prevMessages => 
-        prevMessages.map(msg => 
-          msg.senderid === sessionData?.user?._id && msg.receiverid === data.receiverId
-            ? { ...msg, readStatus: { isRead: true, readAt: new Date() } }
-            : msg
-        )
-      );
+      setMessages(prevMessages => {
+        const updatedMessages = prevMessages.map(msg => {
+          if (msg.senderid === sessionData?.user?._id && msg.receiverid === data.receiverId) {
+            console.log("✅ TURNING MESSAGE BLUE:", msg.content, '(ID:', msg._id, ')');
+            return { ...msg, readStatus: { isRead: true, readAt: new Date() } };
+          }
+          return msg;
+        });
+        
+        const blueCount = updatedMessages.filter(m => m.readStatus?.isRead).length;
+        console.log("📊 MESSAGES TURNED BLUE:", blueCount);
+        
+        return updatedMessages;
+      });
+      
+      // Also mark this friend as having read messages (for sidebar color)
+      setFriendsWithReadMessages(prev => {
+        const newSet = new Set([...prev, data.receiverId]);
+        console.log("👥 FRIENDS WITH READ MESSAGES:", Array.from(newSet));
+        return newSet;
+      });
+    });
+
+    // Listen for user activity in chats
+    socket.on("user_joined_chat", (data) => {
+      console.log("👤 USER JOINED CHAT:", data);
+      setActiveUsers(prev => {
+        const newSet = new Set([...prev, data.userId]);
+        console.log("👥 ACTIVE USERS AFTER JOIN:", Array.from(newSet));
+        return newSet;
+      });
+    });
+
+    socket.on("user_left_chat", (data) => {
+      console.log("👤 USER LEFT CHAT:", data);
+      setActiveUsers(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(data.userId);
+        console.log("👥 ACTIVE USERS AFTER LEAVE:", Array.from(newSet));
+        return newSet;
+      });
     });
 
     return () => {
@@ -1493,6 +1652,8 @@ export default function ChatlyUI() {
       socket.off("send_message_to_sender");
       socket.off("send_message_to_receiver");
       socket.off("messages_read");
+      socket.off("user_joined_chat");
+      socket.off("user_left_chat");
       socketListenersRegistered.current = false;
     };
   }, [sessionData?.user?._id]);
@@ -1524,9 +1685,37 @@ export default function ChatlyUI() {
         // If there's a pending attachment, send it (and ignore text content)
         if (pendingAttachment) {
           await sendMessageWithAttachment();
+          
+          // If the receiver is currently in the chat, mark messages as read immediately
+          if (receiverId.current && !receiverId.current.startsWith('group_')) {
+            console.log('🔍 CHECKING RECEIVER ACTIVITY:', {
+              receiverId: receiverId.current,
+              activeUsers: Array.from(activeUsers),
+              activeChat,
+              isReceiverInActiveUsers: activeUsers.has(receiverId.current),
+              isReceiverActiveChat: receiverId.current === activeChat
+            });
+            
+            // Note: Messages will only turn blue when the receiver actually opens the chat
+            // This is the correct WhatsApp behavior - blue ticks only appear when friend reads messages
+          }
         } else if (data.content.length > 0) {
           // Only send text if there's no pending attachment
           sendMessage(session.user._id, receiverId.current, data.content);
+          
+          // If the receiver is currently in the chat, mark messages as read immediately
+          if (receiverId.current && !receiverId.current.startsWith('group_')) {
+            console.log('🔍 CHECKING RECEIVER ACTIVITY:', {
+              receiverId: receiverId.current,
+              activeUsers: Array.from(activeUsers),
+              activeChat,
+              isReceiverInActiveUsers: activeUsers.has(receiverId.current),
+              isReceiverActiveChat: receiverId.current === activeChat
+            });
+            
+            // Note: Messages will only turn blue when the receiver actually opens the chat
+            // This is the correct WhatsApp behavior - blue ticks only appear when friend reads messages
+          }
         }
       }
       form.reset();
@@ -1638,7 +1827,6 @@ export default function ChatlyUI() {
   // This is already handled in the main session useEffect above
 
   useEffect(() => {
-    console.log("newMessages are : ",newMessages)
   },[newMessages,content])
 
   // Persist message counts to sessionStorage
@@ -1706,14 +1894,74 @@ export default function ChatlyUI() {
           senderId: sessionData?.user?._id,
           receiverId: id,
         });
-        socket.once("receive_messages", (msgs) => {
+        socket.once("receive_messages", async (msgs) => {
            const elapsedTime = Date.now() - startTime;
            const remainingTime = Math.max(1000 - elapsedTime, 0);
-          setTimeout(() => {
+          setTimeout(async () => {
             const filtered = filterClearedMessages(msgs || [], id)
-            setMessages(filtered);
+            
+            // Load read status from database for these messages
+            try {
+              console.log('📚 LOADING READ STATUS FOR MESSAGES:', filtered.length);
+              const response = await axios.get(`/api/messages-read-status?senderId=${sessionData.user._id}&receiverId=${id}`);
+              
+              if (response.data.success && response.data.data.readMessages) {
+                console.log('✅ LOADED READ STATUS:', response.data.data.readMessages.length, 'read messages');
+                
+                // Update messages with read status
+                const messagesWithReadStatus = filtered.map(msg => {
+                  const isRead = response.data.data.readMessages.some(readMsg => readMsg._id === msg._id);
+                  if (isRead) {
+                    console.log('🔄 RESTORING READ STATUS FOR MESSAGE:', msg._id, 'content:', msg.content);
+                    return { ...msg, readStatus: { isRead: true, readAt: new Date() } };
+                  }
+                  return msg;
+                });
+                
+                console.log('📊 FINAL MESSAGES WITH READ STATUS:', messagesWithReadStatus.map(m => ({
+                  id: m._id,
+                  content: m.content,
+                  readStatus: m.readStatus,
+                  senderid: m.senderid
+                })));
+                
+                setMessages(messagesWithReadStatus);
+              } else {
+                setMessages(filtered);
+              }
+            } catch (error) {
+              console.error('❌ ERROR LOADING READ STATUS:', error);
+              setMessages(filtered);
+            }
+            
+            // Only mark messages as read if the current user is the RECEIVER (not sender)
+            console.log('🔄 MESSAGES LOADED, CHECKING IF SHOULD MARK AS READ...');
+            console.log('🔍 Current user:', sessionData.user._id, 'Chat with:', id);
+            
+            // Check if current user is the receiver (friend) of messages from this chat
+            const shouldMarkAsRead = filtered.some(msg => 
+              msg.senderid === id && msg.receiverid === sessionData.user._id
+            );
+            
+            if (shouldMarkAsRead) {
+              console.log('✅ CURRENT USER IS RECEIVER - MARKING MESSAGES AS READ');
+              // Only mark as read if there are unread messages from this friend
+              const hasUnreadMessages = filtered.some(msg => 
+                msg.senderid === id && msg.receiverid === sessionData.user._id && !msg.readStatus?.isRead
+              );
+              
+              if (hasUnreadMessages) {
+                console.log('📖 FOUND UNREAD MESSAGES - MARKING AS READ');
+                markMessagesAsRead(id);
+              } else {
+                console.log('✅ ALL MESSAGES ALREADY READ - NO ACTION NEEDED');
+              }
+            } else {
+              console.log('❌ CURRENT USER IS SENDER - NOT MARKING MESSAGES AS READ');
+            }
+            
             setIsLoading(false);
-          },remainingTime);
+          }, remainingTime);
       })
       
       // Request status for this user and reset status
@@ -2034,7 +2282,6 @@ useEffect(() => {
   };
   useEffect(() => {
   if(content.length > 0) {
-    console.log("content is : ",content)
     socket.emit("typing",{receiverId : receiverId.current})
   }
   
@@ -3033,11 +3280,29 @@ useEffect(() => {
                     </div>
                     <div className="flex-1">
                       <div className="flex justify-between items-center">
-                        <h3 className={`font-semibold text-sm ${
-                          item.isAI ? 'text-indigo-700' : 'text-gray-800'
-                        }`}>
-                          {item.displayName}
-                        </h3>
+                <h3 className={`font-semibold text-sm ${
+                  item.isAI ? 'text-indigo-700' : 
+                  (item.type === 'friend' && (
+                    friendsWithReadMessages.has(item.id) || 
+                    messages.some(msg => 
+                      msg.senderid === item.id && 
+                      msg.receiverid === sessionData?.user?._id && 
+                      msg.readStatus?.isRead
+                    )
+                  )) ? 'text-blue-600' : 'text-gray-800'
+                }`}>
+                  {item.displayName}
+                  {item.type === 'friend' && (
+                    friendsWithReadMessages.has(item.id) || 
+                    messages.some(msg => 
+                      msg.senderid === item.id && 
+                      msg.receiverid === sessionData?.user?._id && 
+                      msg.readStatus?.isRead
+                    )
+                  ) && (
+                    <span className="ml-1 text-blue-500">✓</span>
+                  )}
+                </h3>
                         {newMessageCounts[item.id] > 0 && (
                           <div className="bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-bold shadow-md">
                             {newMessageCounts[item.id]}
@@ -3819,11 +4084,13 @@ useEffect(() => {
                                 message.senderid === sessionData?.user?._id
                                   ? 'bg-green-100 rounded-tr-none'
                                   : 'bg-white rounded-tl-none'
-                              } ${message.content == "Message Deleted" ? "bg-red-300 rounded-tr-none pointer-events-none opacity-50" : ""}`}
+                              } ${message.content == "Message Deleted" ? "bg-red-300 rounded-tr-none pointer-events-none opacity-50" : ""} ${
+                                message.senderid === sessionData?.user?._id ? 'flex flex-col items-end' : ''
+                              }`}
                             >
                               {/* Render attachment if exists and message is not deleted */}
                               {message.attachment && message.attachment.url && message.content !== "Message Deleted" && (
-                                <div className="mb-2">
+                                <div className={`mb-2 ${message.senderid === sessionData?.user?._id ? 'w-full' : ''}`}>
                                   
                                   {message.attachment.resourceType === 'image' && message.attachment.format && ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(message.attachment.format.toLowerCase()) && !message.attachment.format.toLowerCase().includes('pdf') && (
                                     <div className="relative">
@@ -4169,23 +4436,81 @@ useEffect(() => {
                                 </div>
                               )}
                               
-                              {/* Render text content if exists */}
-                              {message.content && message.content.trim() !== '' && (
-                                <p className="text-sm">
-                                  {isSearchActive && searchQuery && message.content.toLowerCase().includes(searchQuery.toLowerCase()) ? (
-                                    <span>
-                                      {message.content.split(new RegExp(`(${searchQuery})`, 'gi')).map((part, i) => 
-                                        part.toLowerCase() === searchQuery.toLowerCase() ? (
-                                          <mark key={i} className="bg-yellow-200 px-1 rounded">{part}</mark>
-                                        ) : (
-                                          <span key={i}>{part}</span>
-                                        )
+                              {/* Message content and ticks container for sent messages */}
+                              {message.senderid === sessionData?.user?._id ? (
+                                <div className="flex items-end justify-between w-full">
+                                  {/* Message text */}
+                                  {message.content && message.content.trim() !== '' && (
+                                    <p className="text-sm flex-1 mr-2">
+                                      {isSearchActive && searchQuery && message.content.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                        <span>
+                                          {message.content.split(new RegExp(`(${searchQuery})`, 'gi')).map((part, i) => 
+                                            part.toLowerCase() === searchQuery.toLowerCase() ? (
+                                              <mark key={i} className="bg-yellow-200 px-1 rounded">{part}</mark>
+                                            ) : (
+                                              <span key={i}>{part}</span>
+                                            )
+                                          )}
+                                        </span>
+                                      ) : (
+                                        message.content
                                       )}
-                                    </span>
-                                  ) : (
-                                    message.content
+                                    </p>
                                   )}
-                                </p>
+                                  
+                                  {/* WhatsApp-style double check for sent messages - inside bubble */}
+                                  <div className="flex items-center flex-shrink-0">
+                                    <svg 
+                                      viewBox="0 0 16 11" 
+                                      height="11" 
+                                      width="16" 
+                                      preserveAspectRatio="xMidYMid meet" 
+                                      className={`w-4 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'}`}
+                                      fill="currentColor"
+                                    >
+                                      <title>msg-dblcheck</title>
+                                      <path d="M11.0714 0.652832C10.991 0.585124 10.8894 0.55127 10.7667 0.55127C10.6186 0.55127 10.4916 0.610514 10.3858 0.729004L4.19688 8.36523L1.79112 6.09277C1.7488 6.04622 1.69802 6.01025 1.63877 5.98486C1.57953 5.95947 1.51817 5.94678 1.45469 5.94678C1.32351 5.94678 1.20925 5.99544 1.11192 6.09277L0.800883 6.40381C0.707784 6.49268 0.661235 6.60482 0.661235 6.74023C0.661235 6.87565 0.707784 6.98991 0.800883 7.08301L3.79698 10.0791C3.94509 10.2145 4.11224 10.2822 4.29844 10.2822C4.40424 10.2822 4.5058 10.259 4.60313 10.2124C4.70046 10.1659 4.78086 10.1003 4.84434 10.0156L11.4903 1.59863C11.5623 1.5013 11.5982 1.40186 11.5982 1.30029C11.5982 1.14372 11.5348 1.01888 11.4078 0.925781L11.0714 0.652832ZM8.6212 8.32715C8.43077 8.20866 8.2488 8.09017 8.0753 7.97168C7.99489 7.89128 7.8891 7.85107 7.75791 7.85107C7.6098 7.85107 7.4892 7.90397 7.3961 8.00977L7.10411 8.33984C7.01947 8.43717 6.97715 8.54508 6.97715 8.66357C6.97715 8.79476 7.0237 8.90902 7.1168 9.00635L8.1959 10.0791C8.33132 10.2145 8.49636 10.2822 8.69102 10.2822C8.79681 10.2822 8.89838 10.259 8.99571 10.2124C9.09304 10.1659 9.17556 10.1003 9.24327 10.0156L15.8639 1.62402C15.9358 1.53939 15.9718 1.43994 15.9718 1.32568C15.9718 1.1818 15.9125 1.05697 15.794 0.951172L15.4386 0.678223C15.3582 0.610514 15.2587 0.57666 15.1402 0.57666C14.9964 0.57666 14.8715 0.635905 14.7657 0.754395L8.6212 8.32715Z" fill="currentColor"></path>
+                                    </svg>
+                                  </div>
+                                </div>
+                              ) : (
+                                /* Regular text for received messages */
+                                message.content && message.content.trim() !== '' && (
+                                  <p className="text-sm">
+                                    {isSearchActive && searchQuery && message.content.toLowerCase().includes(searchQuery.toLowerCase()) ? (
+                                      <span>
+                                        {message.content.split(new RegExp(`(${searchQuery})`, 'gi')).map((part, i) => 
+                                          part.toLowerCase() === searchQuery.toLowerCase() ? (
+                                            <mark key={i} className="bg-yellow-200 px-1 rounded">{part}</mark>
+                                          ) : (
+                                            <span key={i}>{part}</span>
+                                          )
+                                        )}
+                                      </span>
+                                    ) : (
+                                      message.content
+                                    )}
+                                  </p>
+                                )
+                              )}
+                              
+                              {/* Ticks for attachment messages (sent by current user) */}
+                              {message.senderid === sessionData?.user?._id && message.attachment && message.content !== "Message Deleted" && (
+                                <div className="flex justify-end mt-2">
+                                  <div className="flex items-center">
+                                    <svg 
+                                      viewBox="0 0 16 11" 
+                                      height="11" 
+                                      width="16" 
+                                      preserveAspectRatio="xMidYMid meet" 
+                                      className={`w-4 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'}`}
+                                      fill="currentColor"
+                                    >
+                                      <title>msg-dblcheck</title>
+                                      <path d="M11.0714 0.652832C10.991 0.585124 10.8894 0.55127 10.7667 0.55127C10.6186 0.55127 10.4916 0.610514 10.3858 0.729004L4.19688 8.36523L1.79112 6.09277C1.7488 6.04622 1.69802 6.01025 1.63877 5.98486C1.57953 5.95947 1.51817 5.94678 1.45469 5.94678C1.32351 5.94678 1.20925 5.99544 1.11192 6.09277L0.800883 6.40381C0.707784 6.49268 0.661235 6.60482 0.661235 6.74023C0.661235 6.87565 0.707784 6.98991 0.800883 7.08301L3.79698 10.0791C3.94509 10.2145 4.11224 10.2822 4.29844 10.2822C4.40424 10.2822 4.5058 10.259 4.60313 10.2124C4.70046 10.1659 4.78086 10.1003 4.84434 10.0156L11.4903 1.59863C11.5623 1.5013 11.5982 1.40186 11.5982 1.30029C11.5982 1.14372 11.5348 1.01888 11.4078 0.925781L11.0714 0.652832ZM8.6212 8.32715C8.43077 8.20866 8.2488 8.09017 8.0753 7.97168C7.99489 7.89128 7.8891 7.85107 7.75791 7.85107C7.6098 7.85107 7.4892 7.90397 7.3961 8.00977L7.10411 8.33984C7.01947 8.43717 6.97715 8.54508 6.97715 8.66357C6.97715 8.79476 7.0237 8.90902 7.1168 9.00635L8.1959 10.0791C8.33132 10.2145 8.49636 10.2822 8.69102 10.2822C8.79681 10.2822 8.89838 10.259 8.99571 10.2124C9.09304 10.1659 9.17556 10.1003 9.24327 10.0156L15.8639 1.62402C15.9358 1.53939 15.9718 1.43994 15.9718 1.32568C15.9718 1.1818 15.9125 1.05697 15.794 0.951172L15.4386 0.678223C15.3582 0.610514 15.2587 0.57666 15.1402 0.57666C14.9964 0.57666 14.8715 0.635905 14.7657 0.754395L8.6212 8.32715Z" fill="currentColor"></path>
+                                    </svg>
+                                  </div>
+                                </div>
                               )}
                               
                               {/* Show beautiful deletion message for attachments */}
@@ -4208,30 +4533,6 @@ useEffect(() => {
                               )}
                             </div>
                             
-                            {/* Blue tick functionality for sent messages */}
-                            {message.senderid === sessionData?.user?._id && (
-                              <div className="flex items-center justify-end mt-1">
-                                <div className="flex items-center space-x-1">
-                                  {/* Two ticks - gray for sent, blue for read */}
-                                  <div className="flex items-center">
-                                    <svg 
-                                      className={`w-3 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'}`} 
-                                      fill="currentColor" 
-                                      viewBox="0 0 20 20"
-                                    >
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                    <svg 
-                                      className={`w-3 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'} -ml-1`} 
-                                      fill="currentColor" 
-                                      viewBox="0 0 20 20"
-                                    >
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
                             
                             {/* Copy and Delete buttons for sender messages (right side) - only for text messages */}
                             {message.senderid === sessionData?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
