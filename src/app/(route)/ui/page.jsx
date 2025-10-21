@@ -58,6 +58,10 @@ export default function ChatlyUI() {
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [editableUsername, setEditableUsername] = useState('');
   const [shouldRemoveProfilePicture, setShouldRemoveProfilePicture] = useState(false);
+  const [usernameError, setUsernameError] = useState('');
+  const [isCheckingUsername, setIsCheckingUsername] = useState(false);
+  const [usernameStatus, setUsernameStatus] = useState('');
+  const [readMessages, setReadMessages] = useState(new Set());
   const [friends, setFriends] = useState([]);
   // Tracks when a chat was cleared for the current user; key is receiverId (friendId or group_*)
   const [clearedAtMap, setClearedAtMap] = useState(() => {
@@ -943,9 +947,142 @@ export default function ChatlyUI() {
     }, 150)
   }
 
+  // Username validation functions
+  const validateUsername = (username) => {
+    if (!username || username.trim().length === 0) {
+      return 'Username is required'
+    }
+    if (username.trim().length < 3) {
+      return 'Username must be at least 3 characters long'
+    }
+    if (!/^[a-zA-Z_]+$/.test(username.trim())) {
+      return 'Username can only contain letters and underscores'
+    }
+    return null
+  }
+
+  const checkUsernameAvailability = async (username) => {
+    if (!username || username.trim().length === 0) return false
+    
+    try {
+      setIsCheckingUsername(true)
+      const response = await axios.post(`/api/unique-username?username=${encodeURIComponent(username.trim())}`)
+      return response.data.success
+    } catch (error) {
+      console.error('Error checking username availability:', error)
+      // If it's a 403 error, it means username is taken
+      if (error.response?.status === 403) {
+        return false // Username is taken
+      }
+      return false
+    } finally {
+      setIsCheckingUsername(false)
+    }
+  }
+
+  const handleUsernameChange = (e) => {
+    const newUsername = e.target.value
+    setEditableUsername(newUsername)
+    // Clear errors when user types
+    setUsernameError('')
+    setUsernameStatus('')
+  }
+
+  // Function to mark messages as read
+  const markMessagesAsRead = async (senderId) => {
+    if (!senderId || !sessionData?.user?._id) return
+    
+    try {
+      const response = await axios.put('/api/mark-messages-read', { senderId })
+      if (response.data.success) {
+        // Update local state to show blue ticks
+        setMessages(prevMessages => 
+          prevMessages.map(msg => 
+            msg.senderid === senderId && msg.receiverid === sessionData.user._id
+              ? { ...msg, readStatus: { isRead: true, readAt: new Date() } }
+              : msg
+          )
+        )
+      }
+    } catch (error) {
+      console.error('Error marking messages as read:', error)
+    }
+  }
+
+  // Function to format date for display
+  const formatMessageDate = (date) => {
+    const messageDate = new Date(date)
+    const today = new Date()
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+    
+    // Reset time to compare only dates
+    const messageDateOnly = new Date(messageDate.getFullYear(), messageDate.getMonth(), messageDate.getDate())
+    const todayOnly = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    const yesterdayOnly = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate())
+    
+    if (messageDateOnly.getTime() === todayOnly.getTime()) {
+      return 'Today'
+    } else if (messageDateOnly.getTime() === yesterdayOnly.getTime()) {
+      return 'Yesterday'
+    } else {
+      return messageDate.toLocaleDateString('en-GB', { 
+        day: '2-digit', 
+        month: '2-digit', 
+        year: 'numeric' 
+      })
+    }
+  }
+
+  // Function to group messages by date
+  const groupMessagesByDate = (messages) => {
+    const grouped = []
+    let currentDate = null
+    
+    messages.forEach((message, index) => {
+      const messageDate = new Date(message.createdAt || Date.now())
+      const dateKey = messageDate.toDateString()
+      
+      if (currentDate !== dateKey) {
+        currentDate = dateKey
+        grouped.push({
+          type: 'date',
+          date: formatMessageDate(messageDate),
+          key: `date-${dateKey}`
+        })
+      }
+      
+      grouped.push({
+        ...message,
+        type: 'message',
+        key: `message-${index}`
+      })
+    })
+    
+    return grouped
+  }
+
   const updateProfile = async () => {
     try {
       setIsUpdatingProfile(true)
+      
+      // Validate username before submitting
+      const usernameValidationError = validateUsername(editableUsername)
+      if (usernameValidationError) {
+        setUsernameError(usernameValidationError)
+        setIsUpdatingProfile(false)
+        return
+      }
+
+      // Check if username is different and available
+      if (editableUsername.trim().toLowerCase() !== sessionData?.user?.username?.toLowerCase()) {
+        const isAvailable = await checkUsernameAvailability(editableUsername)
+        if (!isAvailable) {
+          setUsernameError('Username is already taken')
+          setIsUpdatingProfile(false)
+          return
+        }
+      }
       
       const formData = new FormData()
       formData.append('username', editableUsername)
@@ -992,10 +1129,20 @@ export default function ChatlyUI() {
         }
       } else {
         toast.error(response.data.message || 'Failed to update profile')
+        // If it's a username error, show it in the UI
+        if (response.data.message?.includes('Username')) {
+          setUsernameError(response.data.message)
+        }
       }
     } catch (error) {
       console.error('Error updating profile:', error)
-      toast.error(error.response?.data?.message || 'Failed to update profile')
+      const errorMessage = error.response?.data?.message || 'Failed to update profile'
+      toast.error(errorMessage)
+      
+      // If it's a username error, show it in the UI
+      if (errorMessage.includes('Username')) {
+        setUsernameError(errorMessage)
+      }
     } finally {
       setIsUpdatingProfile(false)
     }
@@ -1005,12 +1152,23 @@ export default function ChatlyUI() {
   useEffect(() => {
     if (showProfileModal && sessionData?.user?.username) {
       setEditableUsername(sessionData.user.username)
-        // Reset profile picture state when modal opens
-        setProfilePicture(null)
-        setProfilePicturePreview(null)
-        setShouldRemoveProfilePicture(false)
+      // Reset profile picture state when modal opens
+      setProfilePicture(null)
+      setProfilePicturePreview(null)
+      setShouldRemoveProfilePicture(false)
+      // Reset validation errors
+      setUsernameError('')
+      setUsernameStatus('')
     }
   }, [showProfileModal, sessionData?.user?.username])
+
+  // Mark messages as read when chat is opened (only for single friend chats)
+  useEffect(() => {
+    if (activeChat && !activeChat.startsWith('group_') && sessionData?.user?._id) {
+      // Mark messages as read when opening a friend chat
+      markMessagesAsRead(activeChat)
+    }
+  }, [activeChat, sessionData?.user?._id])
 
   
   const ChatLoader = () => (
@@ -1317,10 +1475,24 @@ export default function ChatlyUI() {
       }
     });
 
+    // Listen for messages read notifications
+    socket.on("messages_read", (data) => {
+      console.log("📖 MESSAGES READ:", data);
+      // Update messages to show blue ticks
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
+          msg.senderid === sessionData?.user?._id && msg.receiverid === data.receiverId
+            ? { ...msg, readStatus: { isRead: true, readAt: new Date() } }
+            : msg
+        )
+      );
+    });
+
     return () => {
       console.log("🔧 Cleaning up socket listeners for messages");
       socket.off("send_message_to_sender");
       socket.off("send_message_to_receiver");
+      socket.off("messages_read");
       socketListenersRegistered.current = false;
     };
   }, [sessionData?.user?._id]);
@@ -3584,7 +3756,19 @@ useEffect(() => {
                     <ChatLoader />
                   ) : (
                     <div className="flex flex-col space-y-2">
-                      {messages?.map((message, index) => {
+                      {groupMessagesByDate(messages || []).map((item, index) => {
+                        // Handle date separators
+                        if (item.type === 'date') {
+                          return (
+                            <div key={item.key} className="flex justify-center my-4">
+                              <div className="bg-gray-200 text-gray-600 text-xs px-3 py-1 rounded-full">
+                                {item.date}
+                              </div>
+                            </div>
+                          )
+                        }
+                        
+                        const message = item;
                         // Handle system messages (like leave notifications)
                         if (message.isSystemMessage) {
                           return (
@@ -4023,6 +4207,31 @@ useEffect(() => {
                                 </div>
                               )}
                             </div>
+                            
+                            {/* Blue tick functionality for sent messages */}
+                            {message.senderid === sessionData?.user?._id && (
+                              <div className="flex items-center justify-end mt-1">
+                                <div className="flex items-center space-x-1">
+                                  {/* Two ticks - gray for sent, blue for read */}
+                                  <div className="flex items-center">
+                                    <svg 
+                                      className={`w-3 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'}`} 
+                                      fill="currentColor" 
+                                      viewBox="0 0 20 20"
+                                    >
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    <svg 
+                                      className={`w-3 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'} -ml-1`} 
+                                      fill="currentColor" 
+                                      viewBox="0 0 20 20"
+                                    >
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                             
                             {/* Copy and Delete buttons for sender messages (right side) - only for text messages */}
                             {message.senderid === sessionData?.user?._id && message.content !== "Message Deleted" && !message.attachment && (
@@ -5053,7 +5262,11 @@ useEffect(() => {
                       ×
                     </button>
                   </div>
-                ) : getSafeProfilePictureUrl(sessionData?.user?.profilePicture) && !shouldRemoveProfilePicture ? (
+                ) : shouldRemoveProfilePicture ? (
+                  <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg">
+                    <User size={32} className="text-white" />
+                  </div>
+                ) : getSafeProfilePictureUrl(sessionData?.user?.profilePicture) ? (
                   <div className="relative">
                     <img
                       src={getSafeProfilePictureUrl(sessionData.user.profilePicture)}
@@ -5109,14 +5322,34 @@ useEffect(() => {
             {/* User Information */}
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
-                <input
-                  type="text"
-                  value={editableUsername}
-                  onChange={(e) => setEditableUsername(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-                  placeholder="Enter username"
-                />
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Username <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={editableUsername}
+                    onChange={handleUsernameChange}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all ${
+                      usernameError ? 'border-red-500 focus:ring-red-500' : 'border-gray-300'
+                    }`}
+                    placeholder="Enter username"
+                    disabled={isCheckingUsername}
+                  />
+                  {isCheckingUsername && (
+                    <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                      <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                  )}
+                </div>
+                {usernameError && (
+                  <p className="text-red-500 text-sm mt-1 flex items-center">
+                    <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {usernameError}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -5142,7 +5375,7 @@ useEffect(() => {
               </button>
               <button
                 onClick={updateProfile}
-                disabled={isUpdatingProfile}
+                disabled={isUpdatingProfile || isCheckingUsername}
                 className="flex-1 px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg hover:from-indigo-600 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isUpdatingProfile ? (
