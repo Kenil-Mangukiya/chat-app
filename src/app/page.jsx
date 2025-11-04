@@ -2542,31 +2542,38 @@ useEffect(() => {
       const groupId = typeof payload === 'string' ? payload : payload?.groupId
       const groupIdStr = groupId?.toString()
       const deletedBy = typeof payload === 'object' ? payload?.deletedBy : undefined
+      const deletedBySelf = typeof payload === 'object' ? payload?.deletedBySelf : false
+      
       // Remove the group by id, normalizing both sides to string
       setGroups(prev => prev.filter(g => {
         const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
         return gid !== groupIdStr
       }))
+      
       // If we're currently in the deleted group, navigate away
       if (receiverId.current === `group_${groupIdStr}`) {
         receiverId.current = null
+        setActiveChat(null)
         setMessages([])
       }
-      // Add a notification entry locally so users see it immediately
-      setNotifications(prev => {
-        const item = {
-          id: `group_deleted_${groupId}_${Date.now()}`,
-          type: 'group_deleted',
-          title: 'Group Deleted',
-          message: deletedBy ? `${deletedBy} deleted this group` : 'This group was deleted by the owner',
-          timestamp: Date.now(),
-          isRead: false,
-          data: { groupId }
-        }
-        const next = [item, ...(prev || [])]
-        saveGlobalNotifications(next)
-        return next.slice(0, 50)
-      })
+      
+      // Only add notification if the current user didn't delete the group themselves
+      if (!deletedBySelf) {
+        setNotifications(prev => {
+          const item = {
+            id: `group_deleted_${groupId}_${Date.now()}`,
+            type: 'group_deleted',
+            title: 'Group Deleted',
+            message: deletedBy ? `${deletedBy} deleted this group` : 'This group was deleted by the owner',
+            timestamp: Date.now(),
+            isRead: false,
+            data: { groupId }
+          }
+          const next = [item, ...(prev || [])]
+          saveGlobalNotifications(next)
+          return next.slice(0, 50)
+        })
+      }
     }
     const onGroupLeft = async (data) => {
       // Show leave notification in group chat

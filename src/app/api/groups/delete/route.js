@@ -58,12 +58,19 @@ export async function POST(req) {
 
     if (notifications.length) await notificationModel.insertMany(notifications)
 
-    // Emit realtime event to all members (including owner)
-    groupMembers.forEach(uid => {
+    // Emit realtime event to all members (excluding owner)
+    groupMembers.filter(id => id !== session.user._id).forEach(uid => {
       emitToUser(uid, "group_deleted", {
         groupId,
         deletedBy: ownerName
       })
+    })
+    
+    // Also emit to owner but with a flag to indicate they deleted it (so frontend can skip notification)
+    emitToUser(session.user._id, "group_deleted", {
+      groupId,
+      deletedBy: ownerName,
+      deletedBySelf: true // Flag to indicate owner deleted it themselves
     })
 
     return response(200, {}, "Group deleted successfully", true)
