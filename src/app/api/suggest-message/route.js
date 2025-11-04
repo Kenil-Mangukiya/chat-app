@@ -2,7 +2,7 @@ import messageModel from "@/model/message-model";
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 
-const ai = new GoogleGenAI({ apiKey: "AIzaSyAi4Qo2WNX7vOesGW_Rwz9vP8HfOwZLzjE"  });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY  });
 
 export async function POST(req) {
   try {

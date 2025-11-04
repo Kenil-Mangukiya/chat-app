@@ -1,6 +1,6 @@
 export const config = {
-    mongodbUri : process.env.MONGODB_URI || "mongodb+srv://Project:Kenil@cluster0.87ku0.mongodb.net",
-    dbName : process.env.DB_NAME || "chat",
+    mongodbUri : process.env.MONGODB_URI,
+    dbName : process.env.DB_NAME,
     emailUser : process.env.EMAIL_USER,
     emailPass : process.env.EMAIL_PASS,
     emailHost : process.env.EMAIL_HOST,
@@ -9,5 +9,5 @@ export const config = {
     nextAuthSecret : process.env.NEXT_AUTH_SECRET,
     googleClientId : process.env.GOOGLE_CLIENT_ID,
     googleClientSecret : process.env.GOOGLE_CLIENT_SECRET,
-    // ZEGOCLOUD configuration removed
+    nodeEnv : process.env.NODE_ENV,
 }

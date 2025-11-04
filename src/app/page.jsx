@@ -158,7 +158,7 @@ export default function ChatlyUI() {
   const handleMobileBackToSidebar = () => {
     setActiveChat(null);
     setMessages([]);
-    window.history.pushState(null, '', '/ui');
+    window.history.pushState(null, '', '/');
     receiverId.current = null;
     setNewMessageCounts({});
     setTotalNewMessages(0);
@@ -364,6 +364,23 @@ export default function ChatlyUI() {
     const file = e.target.files?.[0]
     if (!file) return
     
+    // Check if file is empty
+    if (file.size === 0) {
+      const fileName = file.name || 'file'
+      const fileBaseName = fileName.split('.')[0] || 'document'
+      toast.error(`${fileBaseName} is empty`, {
+        position: "top-right",
+        autoClose: 4000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
+      })
+      // Clear the file input
+      e.target.value = ''
+      return
+    }
+    
     // Clean up previous preview URL if exists
     if (pendingAttachment?.url) {
       URL.revokeObjectURL(pendingAttachment.url)
@@ -388,6 +405,21 @@ export default function ChatlyUI() {
 
   const uploadFileToCloudinary = async (file) => {
     try {
+      // Check if file is empty before uploading
+      if (!file || file.size === 0) {
+        const fileName = file?.name || 'file'
+        const fileBaseName = fileName.split('.')[0] || 'document'
+        toast.error(`${fileBaseName} is empty`, {
+          position: "top-right",
+          autoClose: 4000,
+          hideProgressBar: false,
+          closeOnClick: true,
+          pauseOnHover: true,
+          draggable: true,
+        })
+        throw new Error('File is empty')
+      }
+      
       setIsUploading(true)
       setUploadingFile(file)
       setUploadProgress(0)
@@ -752,7 +784,7 @@ export default function ChatlyUI() {
         if (receiverId.current === friendToRemove.id) {
           setActiveChat(null)
           setMessages([])
-          window.history.pushState(null, '', '/ui')
+          window.history.pushState(null, '', '/')
           receiverId.current = null
         }
         
@@ -915,9 +947,18 @@ export default function ChatlyUI() {
       
       if (data.success) {
         setShowDeleteGroupModal(false)
+        
+        // Remove the group from groups list immediately
+        setGroups(prev => prev.filter(g => {
+          const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+          return gid !== groupId
+        }))
+        
         // Navigate back to main screen
         receiverId.current = null
+        setActiveChat(null)
         setMessages([])
+        
         // Toast after state updates to avoid race with unmounting
         setTimeout(() => toast.success("Group deleted successfully"), 0)
       } else {
@@ -1866,7 +1907,8 @@ export default function ChatlyUI() {
       setIsLoading(true)
       handleMobileChatSelect(id);
       const startTime = Date.now();
-      window.history.pushState(null, '', `/ui?receiverId=${id}`);
+      const url = id ? `/?receiverId=${id}` : '/'
+      window.history.pushState(null, '', url);
       receiverId.current = id;
       setMessages([]);
       
@@ -2391,12 +2433,80 @@ useEffect(() => {
   useEffect(() => {
     if (!sessionData?.user?._id) return
     const onGroupAdded = (data) => {
+      console.log("Group added notification received:", data)
+      
       // Add the group to the groups list if it's not already there
       setGroups((prev) => {
         const newGroups = [data.group, ...prev]
         return deduplicateGroups(newGroups)
       })
-      // Notifications are handled by socket events, no need to fetch
+      
+      // Show toast notification to the added friend
+      if (data.message || data.addedBy) {
+        const notificationMessage = data.message || `${data.addedBy || 'Someone'} has added you to the group "${data.group?.name || 'a group'}"`
+      
+        
+        // Add notification to notifications state
+        setNotifications(prev => {
+          // Use a unique ID based on group ID and timestamp to avoid duplicates
+          const notificationId = `group_added_${data.group?._id || Date.now()}_${Date.now()}`
+          
+          // Check if notification already exists (by group ID and type)
+          const existing = prev?.find(n => 
+            n.type === 'group_added' && 
+            n.data?.groupId?.toString() === data.group?._id?.toString()
+          )
+          if (existing) return prev
+          
+          const newNotification = {
+            id: notificationId,
+            type: 'group_added',
+            title: 'Added to Group',
+            message: notificationMessage,
+            timestamp: Date.now(),
+            isRead: false,
+            data: {
+              groupId: data.group?._id,
+              groupName: data.group?.name,
+              addedBy: data.addedBy
+            }
+          }
+          
+          const next = [newNotification, ...(prev || [])]
+          saveGlobalNotifications(next)
+          return next.slice(0, 50)
+        })
+        
+        // Refresh notifications from database to get the persistent notification
+        setTimeout(async () => {
+          try {
+            const res = await fetch('/api/notifications')
+            const responseData = await res.json()
+            if (responseData?.success) {
+              const dbNotifications = responseData.data.notifications.map(notif => ({
+                id: notif._id,
+                type: notif.type,
+                title: notif.title,
+                message: notif.message,
+                timestamp: new Date(notif.createdAt).getTime(),
+                isRead: notif.isRead,
+                data: notif.data
+              }))
+              setNotifications(prev => {
+                const combined = [...dbNotifications, ...(prev || [])]
+                const seen = new Set()
+                return combined.filter(notif => {
+                  if (seen.has(notif.id)) return false
+                  seen.add(notif.id)
+                  return true
+                }).slice(0, 50)
+              })
+            }
+          } catch (e) {
+            console.error('Error refreshing notifications:', e)
+          }
+        }, 500)
+      }
     }
     socket.on('group_added', onGroupAdded)
     return () => {
@@ -2411,6 +2521,15 @@ useEffect(() => {
       setGroups((prev) => {
         const newGroups = [group, ...prev]
         return deduplicateGroups(newGroups)
+      })
+      // Show single notification when group is created
+      toast.success(`Created group "${group?.name || 'New Group'}"`, {
+        position: "top-right",
+        autoClose: 3000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
       })
     }
     const onGroupJoined = (group) => {
@@ -2669,12 +2788,26 @@ useEffect(() => {
 
     // Listen for friend removal notifications
     socket.on("friend_removed_notification", (data) => {
-      console.log("Friend removed notification:", data)
+      console.log("Friend removed notification received:", data)
+      
       // Refresh friends list
       socket.emit("get_friends", session.user._id)
+      
       // Refresh users list in add friend modal if it's open
       if (showAddFriendModal) {
         fetchAllUsers()
+      }
+      
+      // If we're currently chatting with the friend who removed us, go back to main screen
+      if (receiverId.current && data.removerUsername) {
+        // Check if the current chat is with the remover
+        const currentFriend = friends.find(f => f.friendid === receiverId.current)
+        if (currentFriend && currentFriend.friendusername === data.removerUsername) {
+          setActiveChat(null)
+          setMessages([])
+          window.history.pushState(null, '', '/')
+          receiverId.current = null
+        }
       }
     })
 
@@ -3357,7 +3490,7 @@ useEffect(() => {
                               setGroupSearch("")
                               setGroupFilteredFriends([])
                               setShowCreateGroup(false)
-                              toast.success(`Created group "${data.data.group?.name || newGroupName}"`)
+                              // Don't show toast here - let socket event handle it to avoid duplicate notifications
                             } else {
                               if (data?.statusCode === 409 || (data?.message || '').toLowerCase().includes('exists')) {
                                 setGroupNameServerError(data?.message || 'Group name already exists. Choose another name.')
@@ -3383,7 +3516,7 @@ useEffect(() => {
           `}>
             {activeChat ? (
               <>
-                <div className="flex justify-between items-center p-2 sm:p-3 bg-gray-200 border-b border-gray-300">
+                <div className="flex justify-between items-center p-2 sm:p-3 bg-gray-200 border-b border-gray-300 sticky top-0 z-30">
                   <div className="flex items-center">
                     <div className="mr-3">
                       <button 
@@ -3965,7 +4098,31 @@ useEffect(() => {
                                         src={message.attachment.secureUrl || message.attachment.url} 
                                         alt={message.attachment.originalFilename || 'Image'} 
                                         className="max-w-80 max-h-80 w-auto h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity object-cover"
-                                        onClick={() => window.open(message.attachment.secureUrl || message.attachment.url, '_blank')}
+                                        onClick={async (e) => {
+                                          e.stopPropagation()
+                                          try {
+                                            // Download image directly instead of opening in new tab
+                                            const response = await fetch(message.attachment.secureUrl || message.attachment.url)
+                                            const blob = await response.blob()
+                                            const url = window.URL.createObjectURL(blob)
+                                            const link = document.createElement('a')
+                                            link.href = url
+                                            link.download = message.attachment.originalFilename || 'image'
+                                            document.body.appendChild(link)
+                                            link.click()
+                                            document.body.removeChild(link)
+                                            window.URL.revokeObjectURL(url)
+                                          } catch (error) {
+                                            console.error('Download failed:', error)
+                                            // Fallback: try direct download
+                                            const link = document.createElement('a')
+                                            link.href = message.attachment.secureUrl || message.attachment.url
+                                            link.download = message.attachment.originalFilename || 'image'
+                                            document.body.appendChild(link)
+                                            link.click()
+                                            document.body.removeChild(link)
+                                          }
+                                        }}
                                         onError={(e) => {
                                           e.target.style.display = 'none'
                                           console.error('Failed to load image:', message.attachment.url)
@@ -3993,7 +4150,6 @@ useEffect(() => {
                                                 const link = document.createElement('a')
                                                 link.href = message.attachment.secureUrl || message.attachment.url
                                                 link.download = message.attachment.originalFilename || 'image'
-                                                link.target = '_blank'
                                                 document.body.appendChild(link)
                                                 link.click()
                                                 document.body.removeChild(link)
@@ -4225,9 +4381,11 @@ useEffect(() => {
                                                   // URL format: https://res.cloudinary.com/cloud/raw/upload/v123/public_id.format
                                                   // Should become: https://res.cloudinary.com/cloud/raw/upload/fl_attachment:filename/v123/public_id.format
                                                   const filename = message.attachment.originalFilename || 'document'
+                                                  // Sanitize filename to remove special characters that break Cloudinary URLs
+                                                  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_")
                                                   if (directUrl.includes('/upload/')) {
                                                     // Insert fl_attachment:filename after /upload/ and before /v (version)
-                                                    directUrl = directUrl.replace('/upload/', '/upload/fl_attachment:' + encodeURIComponent(filename) + '/')
+                                                    directUrl = directUrl.replace('/upload/', '/upload/fl_attachment:' + safeName + '/')
                                                   }
                                                 }
                                                 window.open(directUrl, '_blank')
@@ -5431,7 +5589,6 @@ useEffect(() => {
             {/* Profile Picture Section */}
             <div className="flex flex-col items-center space-y-4">
               <div key={forceRerender} className="relative">
-                {console.log('Profile Modal Debug:', { profilePicturePreview, profilePicture, shouldRemoveProfilePicture })}
                 {profilePicturePreview && profilePicturePreview !== null && !shouldRemoveProfilePicture ? (
                   <div className="relative">
                     <img
@@ -5450,7 +5607,7 @@ useEffect(() => {
                   </div>
                 ) : shouldRemoveProfilePicture ? (
                   <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg">
-                    <User size={32} className="text-white" />
+                    {generateAvatarInitials(sessionData?.user?.username || '')}
                   </div>
                 ) : getSafeProfilePictureUrl(sessionData?.user?.profilePicture) ? (
                   <div className="relative">
@@ -5459,13 +5616,13 @@ useEffect(() => {
                       alt="Current profile"
                       className="w-32 h-32 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
                       onError={(e) => {
-                        // Fallback to user icon if image fails to load
+                        // Fallback to initials if image fails to load
                         e.target.style.display = 'none'
                         e.target.nextSibling.style.display = 'flex'
                       }}
                     />
                     <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg hidden">
-                      <User size={32} className="text-white" />
+                      {generateAvatarInitials(sessionData?.user?.username || '')}
                     </div>
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRemoveProfilePicture() }}
@@ -5477,7 +5634,7 @@ useEffect(() => {
                   </div>
                 ) : (
                   <div className="w-32 h-32 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 flex items-center justify-center text-white text-3xl font-bold shadow-lg">
-                    <User size={32} className="text-white" />
+                    {generateAvatarInitials(sessionData?.user?.username || '')}
                   </div>
                 )}
               </div>
@@ -5490,10 +5647,15 @@ useEffect(() => {
                   onChange={handleProfilePictureChange}
                   className="hidden"
                   id="profile-picture-update"
+                  disabled={isUpdatingProfile}
                 />
                 <label
                   htmlFor="profile-picture-update"
-                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-lg cursor-pointer hover:from-purple-600 hover:to-purple-700 transition-all duration-200 font-medium shadow-lg"
+                  className={`px-6 py-2 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-lg transition-all duration-200 font-medium shadow-lg ${
+                    isUpdatingProfile 
+                      ? 'opacity-50 cursor-not-allowed' 
+                      : 'cursor-pointer hover:from-purple-600 hover:to-purple-700'
+                  }`}
                 >
                   Update Picture
                 </label>

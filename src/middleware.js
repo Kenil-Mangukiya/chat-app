@@ -11,7 +11,7 @@ export async function middleware(req) {
 	// If user is authenticated and hits auth pages, send them to UI
 	if (token && (pathname === "/sign-in" || pathname === "/sign-up")) {
 		const redirectUrl = req.nextUrl.clone()
-		redirectUrl.pathname = "/ui"
+		redirectUrl.pathname = "/"
 		redirectUrl.search = ""
 		return NextResponse.redirect(redirectUrl)
 	}

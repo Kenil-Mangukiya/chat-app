@@ -35,9 +35,13 @@ export async function POST(req) {
     group.members.splice(memberIndex, 1)
     await group.save()
 
-    // Create notification for remaining members about the leave
+    // Create notification for remaining members about the leave (including owner)
     const remainingMembers = group.members.map(member => member.userId.toString())
-    const notifications = remainingMembers.map(memberId => ({
+    // Ensure owner gets notified even if they're not in members list (owner is separate field)
+    const ownerId = group.ownerId.toString()
+    const allRecipients = [...new Set([...remainingMembers, ownerId])]
+    
+    const notifications = allRecipients.map(memberId => ({
       userId: memberId,
       type: "group_member_left",
       title: "Member Left Group",
@@ -56,8 +60,8 @@ export async function POST(req) {
       await notificationModel.insertMany(notifications)
     }
 
-    // Emit realtime event to remaining members so active chats can show system message
-    remainingMembers.forEach(uid => {
+    // Emit realtime event to remaining members and owner so active chats can show system message
+    allRecipients.forEach(uid => {
       emitToUser(uid, "group_member_left", {
         groupId,
         userId: session.user._id,

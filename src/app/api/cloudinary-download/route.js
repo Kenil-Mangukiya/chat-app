@@ -68,9 +68,13 @@ export async function POST(req) {
     // Add attachment flags for raw files (PDFs, documents) to ensure proper download
     // Raw files need fl_attachment flag to trigger download instead of inline display
     if (resourceTypeToUse === "raw") {
-      // Use fl_attachment:filename format if downloadName is provided
+      // Sanitize filename to remove special characters that break Cloudinary URLs
+      // Replace spaces, parentheses, brackets, quotes, and other special chars with underscores
       if (downloadName) {
-        urlOptions.flags = `attachment:${downloadName}`
+        // Remove special characters that break Cloudinary URL parsing
+        // Keep only alphanumeric, dots, hyphens, and underscores
+        const safeName = downloadName.replace(/[^a-zA-Z0-9._-]/g, "_")
+        urlOptions.flags = `attachment:${safeName}`
       } else {
         urlOptions.flags = "attachment"
       }

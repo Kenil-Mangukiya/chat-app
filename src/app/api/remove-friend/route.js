@@ -3,6 +3,8 @@ import friendModel from "@/model/friend-model"
 import userModel from "@/model/user-model"
 import notificationModel from "@/model/notification-model"
 import friendRequestModel from "@/model/friend-request-model"
+import conversationModel from "@/model/conversation-model"
+import messageModel from "@/model/message-model"
 import { response } from "@/util/response"
 import { getServerSession } from "next-auth"
 import { authOption as authOptions } from "../auth/[...nextauth]/option"
@@ -68,6 +70,30 @@ export async function POST(req) {
             ]
         })
         console.log('Deleted friend requests:', deletedRequests.deletedCount)
+
+        // Delete all direct conversations between these two users
+        console.log('Deleting conversations between users:', { userid: session.user._id, friendid: friendId })
+        const conversations = await conversationModel.find({
+            participants: { $all: [session.user._id, friendId] },
+            type: "direct"
+        })
+        console.log('Found conversations to delete:', conversations.length)
+
+        if (conversations.length > 0) {
+            const conversationIds = conversations.map(c => c._id)
+            
+            // Delete all messages in these conversations
+            const deletedMessages = await messageModel.deleteMany({
+                conversationid: { $in: conversationIds }
+            })
+            console.log('Deleted messages:', deletedMessages.deletedCount)
+
+            // Delete the conversations
+            const deletedConversations = await conversationModel.deleteMany({
+                _id: { $in: conversationIds }
+            })
+            console.log('Deleted conversations:', deletedConversations.deletedCount)
+        }
 
         // Create notification for the removed friend
         await notificationModel.create({

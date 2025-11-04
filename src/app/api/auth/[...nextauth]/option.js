@@ -129,7 +129,7 @@ export const authOption = {
               console.error("Failed to add AI friend for Google user:", error);
             }
             
-            return true; // Allow sign-in and redirect to /ui
+            return true; // Allow sign-in and redirect to /
           }
         }
         return true;
@@ -222,11 +222,8 @@ export const authOption = {
     maxAge: 30 * 24 * 60 * 60, // 30 days
     updateAge: 24 * 60 * 60,   // 24 hours
   },
-
-  debug: process.env.NODE_ENV !== "production", // Only debug in development
-  secret: process.env.NEXTAUTH_SECRET || config.nextAuthSecret || "fallback-secret-key-for-development",
   
-  // Add explicit URL configuration
-  url: process.env.NEXTAUTH_URL || "http://localhost:3000",
+  debug: config.nodeEnv !== "production", // Only debug in development
+  secret: config.nextAuthSecret,
 };
 

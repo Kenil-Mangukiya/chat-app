@@ -303,7 +303,7 @@ function SignUpPage() {
   const handleGoogleSignUp = async () => {
     try {
       setIsGoogleLoading(true)
-      await signIn("google", { callbackUrl: "/ui" })
+      await signIn("google", { callbackUrl: "/" })
     } catch (error) {
       console.error("Google sign-in error:", error)
       toast.error("Google sign-up failed. Please try again.")
