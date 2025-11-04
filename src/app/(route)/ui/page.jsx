@@ -422,8 +422,12 @@ export default function ChatlyUI() {
         resourceType = 'raw'
       }
 
-      // Get cloud name - use environment variable or default
-      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || 'daqmbzcoo'
+      // Get cloud name from server (required for both raw and signed uploads)
+      // For raw files, we still need cloudName from server, but skip signature generation
+      const signatureData = await getCloudinarySignature(resourceType)
+      const { cloudName } = signatureData
+      
+      console.log('🌐 Cloud name from server:', cloudName)
       
       // Create FormData
       const form = new FormData()
@@ -431,7 +435,7 @@ export default function ChatlyUI() {
       // DO NOT append resource_type to form - it's already in the URL
       
       if (resourceType === 'raw') {
-        // ✅ Unsigned upload for documents - skip signature API call
+        // ✅ Unsigned upload for documents - use cloudName from server but skip signature
         form.append('upload_preset', 'chat_app')
         form.append('folder', 'chat_uploads')
         
@@ -439,11 +443,11 @@ export default function ChatlyUI() {
           fileName: file.name,
           fileType: file.type,
           folder: 'chat_uploads',
-          uploadPreset: 'chat_app'
+          uploadPreset: 'chat_app',
+          cloudName: cloudName
         })
       } else {
         // ✅ Signed upload for images/videos
-        const signatureData = await getCloudinarySignature(resourceType)
         const { apiKey, timestamp, signature, folder } = signatureData
         form.append('api_key', apiKey)
         form.append('timestamp', timestamp)
@@ -454,7 +458,8 @@ export default function ChatlyUI() {
           fileName: file.name,
           fileType: file.type,
           resourceType: resourceType,
-          folder: folder
+          folder: folder,
+          cloudName: cloudName
         })
       }
 
