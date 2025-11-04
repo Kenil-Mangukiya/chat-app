@@ -364,21 +364,6 @@ export default function ChatlyUI() {
     const file = e.target.files?.[0]
     if (!file) return
     
-    // Check if file is image or video only
-    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
-      toast.error("Only images and videos can be sent. Contact developer to enable more features.", {
-        position: "top-right",
-        autoClose: 4000,
-        hideProgressBar: false,
-        closeOnClick: true,
-        pauseOnHover: true,
-        draggable: true,
-      });
-      // Clear the file input
-      e.target.value = '';
-      return;
-    }
-    
     // Clean up previous preview URL if exists
     if (pendingAttachment?.url) {
       URL.revokeObjectURL(pendingAttachment.url)
@@ -437,40 +422,47 @@ export default function ChatlyUI() {
         resourceType = 'raw'
       }
 
-      const signatureData = await getCloudinarySignature(resourceType)
-      const { cloudName, resourceType: responseResourceType, useDirectUpload } = signatureData
-
+      // Get cloud name - use environment variable or default
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || 'daqmbzcoo'
+      
+      // Create FormData
       const form = new FormData()
       form.append('file', file)
-      form.append('resource_type', responseResourceType)
+      // DO NOT append resource_type to form - it's already in the URL
       
-      // For raw files (documents), use unsigned preset for public access
-      if (useDirectUpload) {
-        // Use unsigned preset for public access
-        const { apiKey, uploadPreset } = signatureData
-        form.append('api_key', apiKey)
-        form.append('upload_preset', uploadPreset || 'unsigned')
+      if (resourceType === 'raw') {
+        // ✅ Unsigned upload for documents - skip signature API call
+        form.append('upload_preset', 'chat_app')
+        form.append('folder', 'chat_uploads')
+        
+        console.log('📤 Uploading unsigned RAW file:', {
+          fileName: file.name,
+          fileType: file.type,
+          folder: 'chat_uploads',
+          uploadPreset: 'chat_app'
+        })
       } else {
-        // For images/videos, use signed upload
+        // ✅ Signed upload for images/videos
+        const signatureData = await getCloudinarySignature(resourceType)
         const { apiKey, timestamp, signature, folder } = signatureData
-      form.append('api_key', apiKey)
-      form.append('timestamp', timestamp)
-      form.append('signature', signature)
-      form.append('folder', folder)
+        form.append('api_key', apiKey)
+        form.append('timestamp', timestamp)
+        form.append('signature', signature)
+        form.append('folder', folder)
+        
+        console.log('📤 Uploading signed file:', {
+          fileName: file.name,
+          fileType: file.type,
+          resourceType: resourceType,
+          folder: folder
+        })
       }
 
-      console.log('Upload parameters:', {
-        cloudName,
-        resourceType: responseResourceType,
-        fileType: file.type,
-        fileName: file.name,
-        useDirectUpload,
-        uploadMethod: useDirectUpload ? 'direct' : 'signed'
-      })
-
-
       const xhr = new XMLHttpRequest()
-      const url = `https://api.cloudinary.com/v1_1/${cloudName}/${responseResourceType}/upload`
+      const url = `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`
+      
+      console.log('🌐 Upload URL:', url)
+      console.log('📤 Sending upload request to Cloudinary...')
       
       // Store xhr reference for cancellation BEFORE starting the request
       if (uploadAbortController.current) {
@@ -497,6 +489,31 @@ export default function ChatlyUI() {
       })
       const result = await promise
       
+      // Log Cloudinary response to verify folder storage
+      console.log('✅ Cloudinary Upload Response:', {
+        publicId: result.public_id,
+        publicIdPath: result.public_id,
+        isInFolder: result.public_id?.includes('chat_uploads/'),
+        folder: result.public_id?.includes('chat_uploads/') ? 'chat_uploads/' : 'root folder',
+        secureUrl: result.secure_url,
+        resourceType: result.resource_type,
+        format: result.format,
+        originalFilename: result.original_filename,
+        bytes: result.bytes
+      })
+      
+      // Verify folder storage for raw files
+      if (resourceType === 'raw') {
+        if (result.public_id?.includes('chat_uploads/')) {
+          console.log('✅ SUCCESS: File stored in chat_uploads/ folder')
+          console.log('📁 Full path:', result.public_id)
+        } else {
+          console.warn('⚠️ WARNING: File NOT in chat_uploads/ folder!')
+          console.warn('📁 Actual path:', result.public_id)
+          console.warn('💡 File is stored in Cloudinary root folder')
+        }
+      }
+      
       const attachment = {
         url: result.secure_url,
         secureUrl: result.secure_url,
@@ -510,6 +527,12 @@ export default function ChatlyUI() {
         originalFilename: result.original_filename,
         thumbnailUrl: result.secure_url
       }
+      
+      console.log('📎 Final attachment object:', {
+        publicId: attachment.publicId,
+        folder: attachment.publicId?.includes('chat_uploads/') ? 'chat_uploads/' : 'root',
+        url: attachment.secureUrl
+      })
       
       return attachment
     } catch (err) {
@@ -4431,7 +4454,18 @@ useEffect(() => {
                                               } catch (error) {
                                                 console.error('Download failed:', error)
                                                 // Final fallback: try direct URL
-                                                const directUrl = message.attachment.secureUrl || message.attachment.url
+                                                // For raw files (documents), add fl_attachment flag to ensure download
+                                                let directUrl = message.attachment.secureUrl || message.attachment.url
+                                                if (message.attachment.resourceType === 'raw' && directUrl) {
+                                                  // Add fl_attachment flag to the URL for raw files
+                                                  // URL format: https://res.cloudinary.com/cloud/raw/upload/v123/public_id.format
+                                                  // Should become: https://res.cloudinary.com/cloud/raw/upload/fl_attachment:filename/v123/public_id.format
+                                                  const filename = message.attachment.originalFilename || 'document'
+                                                  if (directUrl.includes('/upload/')) {
+                                                    // Insert fl_attachment:filename after /upload/ and before /v (version)
+                                                    directUrl = directUrl.replace('/upload/', '/upload/fl_attachment:' + encodeURIComponent(filename) + '/')
+                                                  }
+                                                }
                                                 window.open(directUrl, '_blank')
                                               }
                                             }}
@@ -4538,20 +4572,22 @@ useEffect(() => {
                                     </p>
                                   )}
                                   
-                                  {/* WhatsApp-style double check for sent messages - inside bubble */}
-                                  <div className="flex items-center flex-shrink-0">
-                                    <svg 
-                                      viewBox="0 0 16 11" 
-                                      height="11" 
-                                      width="16" 
-                                      preserveAspectRatio="xMidYMid meet" 
-                                      className={`w-4 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'}`}
-                                      fill="currentColor"
-                                    >
-                                      <title>msg-dblcheck</title>
-                                      <path d="M11.0714 0.652832C10.991 0.585124 10.8894 0.55127 10.7667 0.55127C10.6186 0.55127 10.4916 0.610514 10.3858 0.729004L4.19688 8.36523L1.79112 6.09277C1.7488 6.04622 1.69802 6.01025 1.63877 5.98486C1.57953 5.95947 1.51817 5.94678 1.45469 5.94678C1.32351 5.94678 1.20925 5.99544 1.11192 6.09277L0.800883 6.40381C0.707784 6.49268 0.661235 6.60482 0.661235 6.74023C0.661235 6.87565 0.707784 6.98991 0.800883 7.08301L3.79698 10.0791C3.94509 10.2145 4.11224 10.2822 4.29844 10.2822C4.40424 10.2822 4.5058 10.259 4.60313 10.2124C4.70046 10.1659 4.78086 10.1003 4.84434 10.0156L11.4903 1.59863C11.5623 1.5013 11.5982 1.40186 11.5982 1.30029C11.5982 1.14372 11.5348 1.01888 11.4078 0.925781L11.0714 0.652832ZM8.6212 8.32715C8.43077 8.20866 8.2488 8.09017 8.0753 7.97168C7.99489 7.89128 7.8891 7.85107 7.75791 7.85107C7.6098 7.85107 7.4892 7.90397 7.3961 8.00977L7.10411 8.33984C7.01947 8.43717 6.97715 8.54508 6.97715 8.66357C6.97715 8.79476 7.0237 8.90902 7.1168 9.00635L8.1959 10.0791C8.33132 10.2145 8.49636 10.2822 8.69102 10.2822C8.79681 10.2822 8.89838 10.259 8.99571 10.2124C9.09304 10.1659 9.17556 10.1003 9.24327 10.0156L15.8639 1.62402C15.9358 1.53939 15.9718 1.43994 15.9718 1.32568C15.9718 1.1818 15.9125 1.05697 15.794 0.951172L15.4386 0.678223C15.3582 0.610514 15.2587 0.57666 15.1402 0.57666C14.9964 0.57666 14.8715 0.635905 14.7657 0.754395L8.6212 8.32715Z" fill="currentColor"></path>
-                                    </svg>
-                                  </div>
+                                  {/* WhatsApp-style double check for sent messages - inside bubble (only show if no attachment) */}
+                                  {!message.attachment && (
+                                    <div className="flex items-center flex-shrink-0">
+                                      <svg 
+                                        viewBox="0 0 16 11" 
+                                        height="11" 
+                                        width="16" 
+                                        preserveAspectRatio="xMidYMid meet" 
+                                        className={`w-4 h-3 ${message.readStatus?.isRead ? 'text-blue-500' : 'text-gray-400'}`}
+                                        fill="currentColor"
+                                      >
+                                        <title>msg-dblcheck</title>
+                                        <path d="M11.0714 0.652832C10.991 0.585124 10.8894 0.55127 10.7667 0.55127C10.6186 0.55127 10.4916 0.610514 10.3858 0.729004L4.19688 8.36523L1.79112 6.09277C1.7488 6.04622 1.69802 6.01025 1.63877 5.98486C1.57953 5.95947 1.51817 5.94678 1.45469 5.94678C1.32351 5.94678 1.20925 5.99544 1.11192 6.09277L0.800883 6.40381C0.707784 6.49268 0.661235 6.60482 0.661235 6.74023C0.661235 6.87565 0.707784 6.98991 0.800883 7.08301L3.79698 10.0791C3.94509 10.2145 4.11224 10.2822 4.29844 10.2822C4.40424 10.2822 4.5058 10.259 4.60313 10.2124C4.70046 10.1659 4.78086 10.1003 4.84434 10.0156L11.4903 1.59863C11.5623 1.5013 11.5982 1.40186 11.5982 1.30029C11.5982 1.14372 11.5348 1.01888 11.4078 0.925781L11.0714 0.652832ZM8.6212 8.32715C8.43077 8.20866 8.2488 8.09017 8.0753 7.97168C7.99489 7.89128 7.8891 7.85107 7.75791 7.85107C7.6098 7.85107 7.4892 7.90397 7.3961 8.00977L7.10411 8.33984C7.01947 8.43717 6.97715 8.54508 6.97715 8.66357C6.97715 8.79476 7.0237 8.90902 7.1168 9.00635L8.1959 10.0791C8.33132 10.2145 8.49636 10.2822 8.69102 10.2822C8.79681 10.2822 8.89838 10.259 8.99571 10.2124C9.09304 10.1659 9.17556 10.1003 9.24327 10.0156L15.8639 1.62402C15.9358 1.53939 15.9718 1.43994 15.9718 1.32568C15.9718 1.1818 15.9125 1.05697 15.794 0.951172L15.4386 0.678223C15.3582 0.610514 15.2587 0.57666 15.1402 0.57666C14.9964 0.57666 14.8715 0.635905 14.7657 0.754395L8.6212 8.32715Z" fill="currentColor"></path>
+                                      </svg>
+                                    </div>
+                                  )}
                                 </div>
                               ) : (
                                 /* Regular text for received messages */
@@ -4574,9 +4610,9 @@ useEffect(() => {
                                 )
                               )}
                               
-                              {/* Ticks for attachment messages (sent by current user) */}
+                              {/* Ticks for attachment messages (sent by current user) - bottom left only */}
                               {message.senderid === sessionData?.user?._id && message.attachment && message.content !== "Message Deleted" && (
-                                <div className="flex justify-end mt-2">
+                                <div className="flex justify-start mt-2">
                                   <div className="flex items-center">
                                     <svg 
                                       viewBox="0 0 16 11" 
@@ -4671,7 +4707,7 @@ useEffect(() => {
                     </div>
                   )}
                   <div className="relative">
-                    <button type="button" onClick={() => openFilePicker('image/*,video/*')} className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200">
+                    <button type="button" onClick={() => openFilePicker('*')} className="p-2 hover:bg-gray-100 rounded-full transition-colors duration-200">
                       <Paperclip size={24} className="text-gray-600 hover:text-blue-500 transition-colors duration-200" />
                     </button>
                   </div>

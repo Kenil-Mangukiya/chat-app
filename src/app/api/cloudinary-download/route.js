@@ -65,11 +65,16 @@ export async function POST(req) {
       console.log('Added version to URL options:', extractedVersion)
     }
     
-    // Only add attachment flags for non-raw files
-    if (resourceTypeToUse !== "raw") {
-      urlOptions.flags = "attachment"
-      urlOptions.filename_override = downloadName || undefined
-      console.log('Added attachment flags for non-raw file')
+    // Add attachment flags for raw files (PDFs, documents) to ensure proper download
+    // Raw files need fl_attachment flag to trigger download instead of inline display
+    if (resourceTypeToUse === "raw") {
+      // Use fl_attachment:filename format if downloadName is provided
+      if (downloadName) {
+        urlOptions.flags = `attachment:${downloadName}`
+      } else {
+        urlOptions.flags = "attachment"
+      }
+      console.log('Added attachment flags for raw file:', urlOptions.flags)
     }
     
     // Add format if provided
