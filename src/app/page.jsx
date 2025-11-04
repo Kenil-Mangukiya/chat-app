@@ -990,8 +990,16 @@ export default function ChatlyUI() {
       
       if (data.success) {
         setShowLeaveGroupModal(false)
+        
+        // Remove the group from groups list immediately
+        setGroups(prev => prev.filter(g => {
+          const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+          return gid !== groupId
+        }))
+        
         // Navigate back to main screen
         receiverId.current = null
+        setActiveChat(null)
         setMessages([])
         // Toast after UI state updates
         setTimeout(() => toast.success("Left group successfully"), 0)
@@ -2518,11 +2526,23 @@ useEffect(() => {
   useEffect(() => {
     if (!sessionData?.user?._id) return
     const onGroupCreated = (group) => {
+      // Check if group already exists before adding to prevent duplicates
       setGroups((prev) => {
+        const existing = prev.find(g => {
+          const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+          return gid === group?._id?.toString()
+        })
+        
+        if (existing) {
+          console.log('Duplicate group creation prevented:', group?._id)
+          return prev
+        }
+        
         const newGroups = [group, ...prev]
         return deduplicateGroups(newGroups)
       })
-      // Show single notification when group is created
+      
+      // Show single notification when group is created (only show toast, don't add to notifications list)
       toast.success(`Created group "${group?.name || 'New Group'}"`, {
         position: "top-right",
         autoClose: 3000,
@@ -2560,6 +2580,16 @@ useEffect(() => {
       // Only add notification if the current user didn't delete the group themselves
       if (!deletedBySelf) {
         setNotifications(prev => {
+          // Check for duplicate notification
+          const existing = prev?.find(n => 
+            n.type === 'group_deleted' && 
+            n.data?.groupId?.toString() === groupIdStr
+          )
+          if (existing) {
+            console.log('Duplicate group_deleted notification prevented:', existing.id)
+            return prev
+          }
+          
           const item = {
             id: `group_deleted_${groupId}_${Date.now()}`,
             type: 'group_deleted',
@@ -2576,7 +2606,27 @@ useEffect(() => {
       }
     }
     const onGroupLeft = async (data) => {
-      // Show leave notification in group chat
+      console.log("Group member left notification received:", data)
+      
+      // Check if current user is the one who left - if so, remove group from their list
+      if (data.userId?.toString() === sessionData?.user?._id?.toString()) {
+        // Remove the group from groups list for the user who left
+        setGroups(prev => prev.filter(g => {
+          const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+          return gid !== data.groupId?.toString()
+        }))
+        
+        // If we're currently in the left group, navigate away
+        if (receiverId.current === `group_${data.groupId}`) {
+          receiverId.current = null
+          setActiveChat(null)
+          setMessages([])
+        }
+        // Don't show notification if user left themselves
+        return
+      }
+      
+      // Show leave notification in group chat if currently viewing that group
       if (receiverId.current === `group_${data.groupId}`) {
         const leaveMessage = {
           id: `leave_${data.userId}_${Date.now()}`,
@@ -2607,7 +2657,59 @@ useEffect(() => {
           console.error('Failed to persist leave message:', error)
         }
       }
-      // Notifications are handled by socket events, no need to fetch
+      
+      // Find the group name for the notification
+      const group = groups.find(g => {
+        const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+        return gid === data.groupId?.toString()
+      })
+      const groupName = group?.name || 'the group'
+      
+      // Check if notification already exists before adding
+      setNotifications(prev => {
+        // Check for duplicate by message content and type
+        const existing = prev?.find(n => 
+          n.type === 'group_member_left' && 
+          n.data?.groupId?.toString() === data.groupId?.toString() &&
+          n.data?.leftById?.toString() === data.userId?.toString() &&
+          n.message?.includes(data.username || 'A member')
+        )
+        if (existing) {
+          console.log('Duplicate notification prevented:', existing.id)
+          return prev
+        }
+        
+        const notificationId = `group_member_left_${data.groupId}_${data.userId}_${Date.now()}`
+        const newNotification = {
+          id: notificationId,
+          type: 'group_member_left',
+          title: 'Member Left Group',
+          message: `${data.username || 'A member'} left the group "${groupName}"`,
+          timestamp: Date.now(),
+          isRead: false,
+          data: {
+            groupId: data.groupId,
+            groupName: groupName,
+            leftBy: data.username,
+            leftById: data.userId
+          }
+        }
+        
+        const next = [newNotification, ...(prev || [])]
+        saveGlobalNotifications(next)
+        
+        // Show toast notification only once
+        toast.info(newNotification.message, {
+          position: "top-right",
+          autoClose: 4000,
+          hideProgressBar: false,
+          closeOnClick: true,
+          pauseOnHover: true,
+          draggable: true,
+        })
+        
+        return next.slice(0, 50)
+      })
     }
     socket.on('group_created', onGroupCreated)
     socket.on('group_joined', onGroupJoined)
