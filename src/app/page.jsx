@@ -324,6 +324,7 @@ export default function ChatlyUI() {
   const socketListenersRegistered = useRef(false) // Track if socket listeners are registered
   const processingNotification = useRef(false) // Track if notification is being processed
   const uploadAbortController = useRef(null) // Track upload request for cancellation
+  const shownNotificationsRef = useRef(new Set()) // Track shown notifications to prevent duplicates
   // File upload UI state
   const [isUploading, setIsUploading] = useState(false)
   const fileInputRef = useRef(null)
@@ -2445,6 +2446,12 @@ useEffect(() => {
       
       // Add the group to the groups list if it's not already there
       setGroups((prev) => {
+        const existing = prev.find(g => {
+          const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+          return gid === data.group?._id?.toString()
+        })
+        if (existing) return prev
+        
         const newGroups = [data.group, ...prev]
         return deduplicateGroups(newGroups)
       })
@@ -2452,13 +2459,10 @@ useEffect(() => {
       // Show toast notification to the added friend
       if (data.message || data.addedBy) {
         const notificationMessage = data.message || `${data.addedBy || 'Someone'} has added you to the group "${data.group?.name || 'a group'}"`
-      
+        let shouldShowToast = false
         
         // Add notification to notifications state
         setNotifications(prev => {
-          // Use a unique ID based on group ID and timestamp to avoid duplicates
-          const notificationId = `group_added_${data.group?._id || Date.now()}_${Date.now()}`
-          
           // Check if notification already exists (by group ID and type)
           const existing = prev?.find(n => 
             n.type === 'group_added' && 
@@ -2466,6 +2470,7 @@ useEffect(() => {
           )
           if (existing) return prev
           
+          const notificationId = `group_added_${data.group?._id || Date.now()}_${Date.now()}`
           const newNotification = {
             id: notificationId,
             type: 'group_added',
@@ -2482,38 +2487,29 @@ useEffect(() => {
           
           const next = [newNotification, ...(prev || [])]
           saveGlobalNotifications(next)
+          shouldShowToast = true
           return next.slice(0, 50)
         })
         
-        // Refresh notifications from database to get the persistent notification
-        setTimeout(async () => {
-          try {
-            const res = await fetch('/api/notifications')
-            const responseData = await res.json()
-            if (responseData?.success) {
-              const dbNotifications = responseData.data.notifications.map(notif => ({
-                id: notif._id,
-                type: notif.type,
-                title: notif.title,
-                message: notif.message,
-                timestamp: new Date(notif.createdAt).getTime(),
-                isRead: notif.isRead,
-                data: notif.data
-              }))
-              setNotifications(prev => {
-                const combined = [...dbNotifications, ...(prev || [])]
-                const seen = new Set()
-                return combined.filter(notif => {
-                  if (seen.has(notif.id)) return false
-                  seen.add(notif.id)
-                  return true
-                }).slice(0, 50)
+        // Show toast outside of setState callback
+        if (shouldShowToast) {
+          const notificationKey = `group_added_${data.group?._id}`
+          if (!shownNotificationsRef.current.has(notificationKey)) {
+            shownNotificationsRef.current.add(notificationKey)
+            setTimeout(() => {
+              toast.success(notificationMessage, {
+                position: "top-right",
+                autoClose: 5000,
+                hideProgressBar: false,
+                closeOnClick: true,
+                pauseOnHover: true,
+                draggable: true,
               })
-            }
-          } catch (e) {
-            console.error('Error refreshing notifications:', e)
+              // Remove from ref after 5 seconds
+              setTimeout(() => shownNotificationsRef.current.delete(notificationKey), 5000)
+            }, 0)
           }
-        }, 500)
+        }
       }
     }
     socket.on('group_added', onGroupAdded)
@@ -2543,14 +2539,23 @@ useEffect(() => {
       })
       
       // Show single notification when group is created (only show toast, don't add to notifications list)
-      toast.success(`Created group "${group?.name || 'New Group'}"`, {
-        position: "top-right",
-        autoClose: 3000,
-        hideProgressBar: false,
-        closeOnClick: true,
-        pauseOnHover: true,
-        draggable: true,
-      })
+      // Use setTimeout to avoid setState during render warning and prevent duplicates
+      const notificationKey = `group_created_${group?._id}`
+      if (!shownNotificationsRef.current.has(notificationKey)) {
+        shownNotificationsRef.current.add(notificationKey)
+        setTimeout(() => {
+          toast.success(`Created group "${group?.name || 'New Group'}"`, {
+            position: "top-right",
+            autoClose: 3000,
+            hideProgressBar: false,
+            closeOnClick: true,
+            pauseOnHover: true,
+            draggable: true,
+          })
+          // Remove from ref after 5 seconds
+          setTimeout(() => shownNotificationsRef.current.delete(notificationKey), 5000)
+        }, 0)
+      }
     }
     const onGroupJoined = (group) => {
       setGroups((prev) => {
@@ -2564,21 +2569,29 @@ useEffect(() => {
       const deletedBy = typeof payload === 'object' ? payload?.deletedBy : undefined
       const deletedBySelf = typeof payload === 'object' ? payload?.deletedBySelf : false
       
-      // Remove the group by id, normalizing both sides to string
-      setGroups(prev => prev.filter(g => {
-        const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
-        return gid !== groupIdStr
-      }))
+      // Remove the group by id, normalizing both sides to string (for ALL users including owner)
+      setGroups(prev => {
+        const filtered = prev.filter(g => {
+          const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+          return gid !== groupIdStr
+        })
+        // Ensure group is removed even if already filtered
+        return filtered
+      })
       
       // If we're currently in the deleted group, navigate away
       if (receiverId.current === `group_${groupIdStr}`) {
         receiverId.current = null
         setActiveChat(null)
         setMessages([])
+        window.history.pushState(null, '', '/')
       }
       
       // Only add notification if the current user didn't delete the group themselves
       if (!deletedBySelf) {
+        let notificationMessage = deletedBy ? `${deletedBy} deleted this group` : 'This group was deleted by the owner'
+        let shouldAddNotification = false
+        
         setNotifications(prev => {
           // Check for duplicate notification
           const existing = prev?.find(n => 
@@ -2590,11 +2603,12 @@ useEffect(() => {
             return prev
           }
           
+          shouldAddNotification = true
           const item = {
             id: `group_deleted_${groupId}_${Date.now()}`,
             type: 'group_deleted',
             title: 'Group Deleted',
-            message: deletedBy ? `${deletedBy} deleted this group` : 'This group was deleted by the owner',
+            message: notificationMessage,
             timestamp: Date.now(),
             isRead: false,
             data: { groupId }
@@ -2603,6 +2617,26 @@ useEffect(() => {
           saveGlobalNotifications(next)
           return next.slice(0, 50)
         })
+        
+        // Show toast notification outside of setState callback
+        if (shouldAddNotification) {
+          const notificationKey = `group_deleted_${groupIdStr}`
+          if (!shownNotificationsRef.current.has(notificationKey)) {
+            shownNotificationsRef.current.add(notificationKey)
+            setTimeout(() => {
+              toast.error(notificationMessage, {
+                position: "top-right",
+                autoClose: 4000,
+                hideProgressBar: false,
+                closeOnClick: true,
+                pauseOnHover: true,
+                draggable: true,
+              })
+              // Remove from ref after 5 seconds
+              setTimeout(() => shownNotificationsRef.current.delete(notificationKey), 5000)
+            }, 0)
+          }
+        }
       }
     }
     const onGroupLeft = async (data) => {
@@ -2666,6 +2700,9 @@ useEffect(() => {
       const groupName = group?.name || 'the group'
       
       // Check if notification already exists before adding
+      let shouldShowToast = false
+      let notificationMessage = ''
+      
       setNotifications(prev => {
         // Check for duplicate by message content and type
         const existing = prev?.find(n => 
@@ -2680,11 +2717,12 @@ useEffect(() => {
         }
         
         const notificationId = `group_member_left_${data.groupId}_${data.userId}_${Date.now()}`
+        notificationMessage = `${data.username || 'A member'} left the group "${groupName}"`
         const newNotification = {
           id: notificationId,
           type: 'group_member_left',
           title: 'Member Left Group',
-          message: `${data.username || 'A member'} left the group "${groupName}"`,
+          message: notificationMessage,
           timestamp: Date.now(),
           isRead: false,
           data: {
@@ -2697,19 +2735,29 @@ useEffect(() => {
         
         const next = [newNotification, ...(prev || [])]
         saveGlobalNotifications(next)
-        
-        // Show toast notification only once
-        toast.info(newNotification.message, {
-          position: "top-right",
-          autoClose: 4000,
-          hideProgressBar: false,
-          closeOnClick: true,
-          pauseOnHover: true,
-          draggable: true,
-        })
-        
+        shouldShowToast = true
         return next.slice(0, 50)
       })
+      
+      // Show toast notification outside of setState callback
+      if (shouldShowToast && notificationMessage) {
+        const notificationKey = `group_member_left_${data.groupId}_${data.userId}`
+        if (!shownNotificationsRef.current.has(notificationKey)) {
+          shownNotificationsRef.current.add(notificationKey)
+          setTimeout(() => {
+            toast.info(notificationMessage, {
+              position: "top-right",
+              autoClose: 4000,
+              hideProgressBar: false,
+              closeOnClick: true,
+              pauseOnHover: true,
+              draggable: true,
+            })
+            // Remove from ref after 5 seconds
+            setTimeout(() => shownNotificationsRef.current.delete(notificationKey), 5000)
+          }, 0)
+        }
+      }
     }
     socket.on('group_created', onGroupCreated)
     socket.on('group_joined', onGroupJoined)
