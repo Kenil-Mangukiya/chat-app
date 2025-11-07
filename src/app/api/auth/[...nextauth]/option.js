@@ -100,6 +100,13 @@ export const authOption = {
 
           if (existingUser) {
             if (existingUser.googleid) {
+              // Already linked; ensure AI friend exists
+              try {
+                const aiFriendResult = await addAiFriendToUser(existingUser._id);
+                console.log("AI friend check result for existing Google user:", aiFriendResult);
+              } catch (error) {
+                console.error("Failed to ensure AI friend for existing Google user:", error);
+              }
               return true; // Already linked; use DB-stored username/profilePicture
             } else {
               // Link Google account to existing user without changing profile data
@@ -107,6 +114,15 @@ export const authOption = {
               // Do NOT set profile picture from Google, even if null — respect user's removal
               // Do NOT overwrite username — respect user-chosen username
               await existingUser.save();
+              
+              // Automatically add AI friend when linking Google account
+              try {
+                const aiFriendResult = await addAiFriendToUser(existingUser._id);
+                console.log("AI friend addition result for linked Google account:", aiFriendResult);
+              } catch (error) {
+                console.error("Failed to add AI friend for linked Google account:", error);
+              }
+              
               return true;
             }
           } else {
@@ -124,9 +140,9 @@ export const authOption = {
             // Automatically add AI friend to the new Google user
             try {
               const aiFriendResult = await addAiFriendToUser(newUser._id);
-              console.log("AI friend addition result for Google user:", aiFriendResult);
+              console.log("AI friend addition result for new Google user:", aiFriendResult);
             } catch (error) {
-              console.error("Failed to add AI friend for Google user:", error);
+              console.error("Failed to add AI friend for new Google user:", error);
             }
             
             return true; // Allow sign-in and redirect to /

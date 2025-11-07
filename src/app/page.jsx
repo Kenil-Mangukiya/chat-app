@@ -2322,7 +2322,6 @@ useEffect(() => {
     link.download = `Chat with ${friendInfo?.friendusername || 'Friend'} - ${new Date().toLocaleDateString()}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    toast.success("Chat exported successfully in user-friendly format");
   };
   useEffect(() => {
   if(content.length > 0) {
@@ -2944,8 +2943,38 @@ useEffect(() => {
     })
 
     // Listen for friend removal notifications
-    socket.on("friend_removed_notification", (data) => {
+    socket.on("friend_removed_notification", async (data) => {
       console.log("Friend removed notification received:", data)
+      
+      // Reload notifications from API to show the friend removal notification
+      try {
+        const res = await fetch('/api/notifications')
+        const responseData = await res.json()
+        if (responseData?.success) {
+          // Convert database notifications to UI format
+          const dbNotifications = responseData.data.notifications.map(notif => ({
+            id: notif._id,
+            type: notif.type,
+            title: notif.title,
+            message: notif.message,
+            timestamp: new Date(notif.createdAt).getTime(),
+            isRead: notif.isRead,
+            data: notif.data
+          }))
+          setNotifications(prev => {
+            // Merge with existing notifications and deduplicate
+            const combined = [...dbNotifications, ...(prev || [])]
+            const seen = new Set()
+            return combined.filter(notif => {
+              if (seen.has(notif.id)) return false
+              seen.add(notif.id)
+              return true
+            }).slice(0, 50)
+          })
+        }
+      } catch (e) {
+        console.error('Error loading notifications:', e)
+      }
       
       // Refresh friends list
       socket.emit("get_friends", session.user._id)
@@ -4138,12 +4167,6 @@ useEffect(() => {
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </button>
-                        
-                        <button className="p-2 text-gray-600 hover:text-purple-500 transition-colors">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                           </svg>
                         </button>
                         
