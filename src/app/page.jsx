@@ -1916,8 +1916,12 @@ export default function ChatlyUI() {
       setIsLoading(true)
       handleMobileChatSelect(id);
       const startTime = Date.now();
-      const url = id ? `/?receiverId=${id}` : '/'
-      window.history.pushState(null, '', url);
+      if (id) {
+        const url = window.location.pathname === '/' ? `${window.location.origin}?receiverId=${id}` : `${window.location.pathname}?receiverId=${id}`
+        window.history.pushState(null, '', url);
+      } else {
+        window.history.pushState(null, '', '/');
+      }
       receiverId.current = id;
       setMessages([]);
       
@@ -2566,7 +2570,15 @@ useEffect(() => {
       const groupId = typeof payload === 'string' ? payload : payload?.groupId
       const groupIdStr = groupId?.toString()
       const deletedBy = typeof payload === 'object' ? payload?.deletedBy : undefined
+      const groupName = typeof payload === 'object' ? payload?.groupName : undefined
       const deletedBySelf = typeof payload === 'object' ? payload?.deletedBySelf : false
+      
+      // Find the group name from groups state before removing it
+      const deletedGroup = groups.find(g => {
+        const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+        return gid === groupIdStr
+      })
+      const finalGroupName = groupName || deletedGroup?.name || 'the group'
       
       // Remove the group by id, normalizing both sides to string (for ALL users including owner)
       setGroups(prev => {
@@ -2588,7 +2600,7 @@ useEffect(() => {
       
       // Only add notification if the current user didn't delete the group themselves
       if (!deletedBySelf) {
-        let notificationMessage = deletedBy ? `${deletedBy} deleted this group` : 'This group was deleted by the owner'
+        let notificationMessage = deletedBy ? `${deletedBy} deleted "${finalGroupName}" group` : `"${finalGroupName}" group was deleted by the owner`
         let shouldAddNotification = false
         
         setNotifications(prev => {
@@ -2610,7 +2622,7 @@ useEffect(() => {
             message: notificationMessage,
             timestamp: Date.now(),
             isRead: false,
-            data: { groupId }
+            data: { groupId, groupName: finalGroupName }
           }
           const next = [item, ...(prev || [])]
           saveGlobalNotifications(next)
@@ -2658,6 +2670,23 @@ useEffect(() => {
         // Don't show notification if user left themselves
         return
       }
+      
+      // Update the group in groups state to remove the left member
+      setGroups(prev => prev.map(group => {
+        const gid = (group?._id && group._id.toString) ? group._id.toString() : group?._id
+        if (gid === data.groupId?.toString()) {
+          // Remove the left member from the group's members list
+          const updatedMembers = group.members.filter(member => {
+            const memberId = member.userId?._id?.toString() || member.userId?.toString() || member.userId
+            return memberId !== data.userId?.toString()
+          })
+          return {
+            ...group,
+            members: updatedMembers
+          }
+        }
+        return group
+      }))
       
       // Show leave notification in group chat if currently viewing that group
       if (receiverId.current === `group_${data.groupId}`) {
@@ -5481,7 +5510,7 @@ useEffect(() => {
             <div className="px-6 py-4 bg-gray-50 border-t">
               <button
                 onClick={() => setShowGroupMembersModal(false)}
-                className="w-full px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg hover:from-blue-600 hover:to-indigo-700 transition-all duration-200 font-medium shadow-lg"
+                className="w-full px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg font-medium shadow-lg"
               >
                 Close
               </button>

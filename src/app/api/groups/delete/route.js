@@ -62,6 +62,7 @@ export async function POST(req) {
     groupMembers.filter(id => id !== session.user._id).forEach(uid => {
       emitToUser(uid, "group_deleted", {
         groupId,
+        groupName: groupName,
         deletedBy: ownerName
       })
     })
@@ -69,6 +70,7 @@ export async function POST(req) {
     // Also emit to owner but with a flag to indicate they deleted it (so frontend can skip notification)
     emitToUser(session.user._id, "group_deleted", {
       groupId,
+      groupName: groupName,
       deletedBy: ownerName,
       deletedBySelf: true // Flag to indicate owner deleted it themselves
     })
