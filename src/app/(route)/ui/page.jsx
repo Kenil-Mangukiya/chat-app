@@ -5136,14 +5136,21 @@ useEffect(() => {
     {/* Beautiful Group Members Modal */}
     {showGroupMembersModal && (() => {
       const groupId = receiverId.current?.replace('group_', '');
-      const currentGroup = groups.find(g => g._id === groupId);
+      const currentGroup = groups.find(g => {
+        const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+        return gid === groupId
+      });
       const groupMembers = currentGroup?.members || [];
+      
+      // Get owner ID for comparison (handle both ObjectId and populated object)
+      const ownerId = currentGroup?.ownerId?._id?.toString() || currentGroup?.ownerId?.toString() || currentGroup?.ownerId;
       
       console.log('Group Members Debug:', {
         groupId,
         currentGroup,
         groupMembers,
-        membersCount: groupMembers.length
+        membersCount: groupMembers.length,
+        ownerId
       });
       
       return (
@@ -5175,29 +5182,39 @@ useEffect(() => {
             {/* Content */}
             <div className="p-6 max-h-96 overflow-y-auto">
               <div className="space-y-3">
-                {groupMembers.map((member, index) => (
-                  <div key={member.userId?._id || member.userId || index} className="flex items-center space-x-4 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors duration-200">
-                    <Avatar 
-                      user={{
-                        username: member.userId?.username || member.username || 'Unknown User',
-                        profilePicture: member.userId?.profilePicture || member.profilePicture
-                      }}
-                      size="lg"
-                      className="shadow-lg"
-                    />
-                    <div className="flex-1">
-                      <h4 className="font-semibold text-gray-800">{member.userId?.username || member.username || 'Unknown User'}</h4>
-                      <p className="text-sm text-gray-500">
-                        {member.userId?._id?.toString() === currentGroup?.ownerId?._id?.toString() ? 'Group Owner' : 'Member'}
-                      </p>
-                    </div>
-                    {member.userId?._id?.toString() === currentGroup?.ownerId?._id?.toString() && (
-                      <div className="px-3 py-1 bg-gradient-to-r from-yellow-400 to-orange-500 text-white text-xs font-medium rounded-full">
-                        Owner
+                {groupMembers.map((member, index) => {
+                  // Get member user ID (handle both ObjectId and populated object)
+                  const memberUserId = member.userId?._id?.toString() || member.userId?.toString() || member.userId;
+                  const isOwner = memberUserId && ownerId && memberUserId.toString() === ownerId.toString();
+                  
+                  // Get username and profile picture (handle both populated and non-populated)
+                  const username = member.userId?.username || member.username || 'Unknown User';
+                  const profilePicture = member.userId?.profilePicture || member.profilePicture;
+                  
+                  return (
+                    <div key={memberUserId || index} className="flex items-center space-x-4 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors duration-200">
+                      <Avatar 
+                        user={{
+                          username: username,
+                          profilePicture: profilePicture
+                        }}
+                        size="lg"
+                        className="shadow-lg"
+                      />
+                      <div className="flex-1">
+                        <h4 className="font-semibold text-gray-800">{username}</h4>
+                        <p className="text-sm text-gray-500">
+                          {isOwner ? 'Group Owner' : 'Member'}
+                        </p>
                       </div>
-                    )}
-                  </div>
-                ))}
+                      {isOwner && (
+                        <div className="px-3 py-1 bg-gradient-to-r from-yellow-400 to-orange-500 text-white text-xs font-medium rounded-full">
+                          Owner
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
             
