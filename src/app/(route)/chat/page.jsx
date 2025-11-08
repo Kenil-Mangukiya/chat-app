@@ -5645,24 +5645,24 @@ useEffect(() => {
     {/* Add Friend Modal */}
     {showAddFriendModal && (
       <div 
-        className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4 pb-8"
+        className="fixed inset-0 bg-black/40 backdrop-blur-md flex items-center justify-center z-50 p-4"
         onClick={(e) => {
           if (e.target === e.currentTarget) {
             handleCloseAddFriendModal()
           }
         }}
       >
-        <div className="bg-white rounded-2xl shadow-2xl w-11/12 sm:w-full max-w-2xl max-h-[90vh] overflow-hidden transform transition-all duration-300 scale-95 animate-in zoom-in-95">
+        <div className="relative bg-white rounded-2xl shadow-2xl w-[90%] h-[90%] max-w-3xl max-h-[90vh] md:w-[85%] md:h-[85%] lg:w-full lg:h-auto flex flex-col overflow-hidden transform transition-all duration-300 scale-95 animate-in fade-in-50 zoom-in-95 lg:max-w-2xl">
           {/* Modal Header */}
-          <div className="bg-gradient-to-r from-blue-500 to-purple-600 p-6 text-white">
-            <div className="flex items-center justify-between">
+          <div className="bg-gradient-to-r from-blue-500 to-purple-600 p-6 text-white sticky top-0 z-20">
+            <div className="flex items-center justify-between gap-4">
               <div>
-                <h2 className="text-xl sm:text-2xl font-bold">Add Friends</h2>
-                <p className="text-blue-100 mt-1">Discover and connect with people</p>
+                <h2 className="text-lg sm:text-xl md:text-2xl font-bold">Add Friends</h2>
+                <p className="text-blue-100 mt-1 text-sm sm:text-base">Discover and connect with people</p>
               </div>
               <button
                 onClick={handleCloseAddFriendModal}
-                className="text-white hover:text-gray-200 transition-colors p-3 rounded-full hover:bg-white hover:bg-opacity-20 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                className="text-white hover:text-gray-200 transition-colors p-3 rounded-full hover:bg-white/20 min-w-[44px] min-h-[44px] flex items-center justify-center"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -5671,36 +5671,37 @@ useEffect(() => {
             </div>
           </div>
 
-          {/* Search Bar */}
-          <div className="px-6 pt-4 pb-4">
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </div>
-              <input
-                type="text"
-                placeholder="Search users by name or email..."
-                value={friendSearchQuery}
-                onChange={(e) => setFriendSearchQuery(e.target.value)}
-                className="block w-full pl-10 pr-10 py-3 border border-gray-300 rounded-xl leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
-              />
-              {friendSearchQuery && (
-                <button
-                  onClick={() => setFriendSearchQuery("")}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
-                >
-                  <svg className="h-5 w-5 text-gray-400 hover:text-gray-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          <div className="flex-1 overflow-y-auto scroll-smooth">
+            {/* Search Bar */}
+            <div className="px-6 py-4 bg-white/95 backdrop-blur-sm border-b sticky top-0 z-10">
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                   </svg>
-                </button>
-              )}
+                </div>
+                <input
+                  type="text"
+                  placeholder="Search users by name or email..."
+                  value={friendSearchQuery}
+                  onChange={(e) => setFriendSearchQuery(e.target.value)}
+                  className="block w-full pl-10 pr-10 py-3 border border-gray-300 rounded-xl leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 text-sm sm:text-base"
+                />
+                {friendSearchQuery && (
+                  <button
+                    onClick={() => setFriendSearchQuery("")}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  >
+                    <svg className="h-5 w-5 text-gray-400 hover:text-gray-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
 
-          {/* Modal Content */}
-          <div className="px-6 pb-10">
+            {/* Modal Content */}
+            <div className="px-6 py-6">
             {loadingUsers ? (
               <div className="flex items-center justify-center py-12">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
@@ -5740,7 +5741,7 @@ useEffect(() => {
               </div>
             ) : (
               <div 
-                className="space-y-3 max-h-96 overflow-y-auto pb-6 rounded-lg"
+                className="space-y-3 pb-6 rounded-lg"
                 style={{
                   scrollbarWidth: 'thin',
                   scrollbarColor: '#d1d5db #f3f4f6'
@@ -5804,7 +5805,7 @@ useEffect(() => {
                         <button
                           onClick={() => handleSendFriendRequest(user._id, user.username)}
                           disabled={friendRequestLoading[user._id]}
-                          className="bg-gradient-to-r from-blue-500 to-purple-600 text-white px-6 py-2 rounded-full hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg hover:shadow-xl"
+                          className="bg-gradient-to-r from-blue-500 to-purple-600 text-white px-6 py-2 rounded-full hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg hover:shadow-xl min-h-[44px] min-w-[44px] text-sm sm:text-base"
                         >
                           {friendRequestLoading[user._id] ? (
                             <div className="flex items-center">
@@ -5829,6 +5830,7 @@ useEffect(() => {
               </div>
             )}
           </div>
+          </div>
 
           {/* Modal Footer */}
           <div className="bg-gray-50 px-6 py-5 pb-6 border-t">
@@ -5844,7 +5846,7 @@ useEffect(() => {
               )}
               <button
                 onClick={handleCloseAddFriendModal}
-                className="px-6 py-2 bg-gradient-to-r from-gray-500 to-gray-600 text-white rounded-full hover:from-gray-600 hover:to-gray-700 transition-all duration-200 shadow-lg hover:shadow-xl"
+                className="px-6 py-2 bg-gradient-to-r from-gray-500 to-gray-600 text-white rounded-full hover:from-gray-600 hover:to-gray-700 transition-all duration-200 shadow-lg hover:shadow-xl min-h-[44px] min-w-[44px] text-sm sm:text-base"
               >
                 Close
               </button>
