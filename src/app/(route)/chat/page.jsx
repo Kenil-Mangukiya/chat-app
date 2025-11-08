@@ -9,7 +9,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { MessageCircle, Search, MoreVertical, Paperclip, Smile, Mic, Send, ChevronLeft, User, LogOut, UserPlus, Users, Copy, Delete, Users2, ArrowUpDown, ArrowUp, ArrowDown, Bot, UserMinus, Trash, Bell, Phone, Video } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FormProvider, useForm } from 'react-hook-form';
 import Picker from '@emoji-mart/react';
 import data from '@emoji-mart/data';
@@ -333,6 +333,22 @@ export default function ChatlyUI() {
   // Preview and pending upload state
   const [pendingAttachment, setPendingAttachment] = useState(null)
   const [uploadingFile, setUploadingFile] = useState(null)
+  const [isSuggesting, setIsSuggesting] = useState(false)
+
+  const currentChatId = activeChat ?? receiverId.current
+  const isGroupChat = currentChatId?.startsWith('group_') ?? false
+  const currentFriend = useMemo(() => {
+    if (!currentChatId || isGroupChat) {
+      return null
+    }
+    return friends.find(friend => friend.friendid === currentChatId) || null
+  }, [currentChatId, friends, isGroupChat])
+  const isCurrentChatAI = currentFriend
+    ? currentFriend.friendusername?.toLowerCase().includes('ai')
+    : false
+  const shouldShowSuggestButton = Boolean(
+    currentChatId && (isGroupChat || !isCurrentChatAI)
+  )
 
   // Persist notification updates across reloads, respecting dismissals
   const saveGlobalNotifications = (items) => {
@@ -2117,39 +2133,41 @@ useEffect(() => {
 }, [searchValue, friends, sortOrder]);
 
   const suggestMessages = async () => {
-    try
-    {
-      if(session)
-      {
-      try {
-        const response = await axios.post("/api/suggest-message",{
-          senderId : sessionData?.user?._id,
-          receiverId : receiverId.current
-        })
-         console.log("response.data is : ",response.data.data)
-         form.setValue('content', response.data.data)
-         setContent(response.data.data)
-         setEnableSend(true)
-      } catch (error) {
-        console.log("Error is : ",error)
-      }
+    if (isSuggesting) {
+      return
+    }
 
-    }
-    else
-    {
+    if (!session) {
       console.log("NO SESSION DATA FOUND")
+      return
     }
+
+    if (!receiverId.current) {
+      console.log("No receiver selected for suggestions")
+      return
     }
-    catch(error)
-    {
+
+    try {
+      setIsSuggesting(true)
+      const response = await axios.post("/api/suggest-message",{
+        senderId : sessionData?.user?._id,
+        receiverId : receiverId.current
+      })
+       console.log("response.data is : ",response.data.data)
+       form.setValue('content', response.data.data)
+       setContent(response.data.data)
+       setEnableSend(true)
+    } catch (error) {
       if(error instanceof AxiosError)
       {
-        toast.error(error)
+        toast.error(error?.response?.data?.message || "Failed to fetch suggestion")
       }
       else
       {
         console.log("Error is : ",error)
       }
+    } finally {
+      setIsSuggesting(false)
     }
   }
 
@@ -5046,16 +5064,30 @@ useEffect(() => {
                             </FormItem>
                           )}
                         />
-                        <div className="relative group">
-                          <button type = "button" onClick={suggestMessages}>
-                            <Bot size={24} className="text-gray-600 cursor-pointer hover:text-indigo-500 transition-colors duration-200" />
-                          </button>
-                          <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-indigo-500 to-teal-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                            <div className="font-medium">Suggest Message</div>
-                            {/* Triangle pointing down */}
-                            <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-indigo-500"></div>
+                        {shouldShowSuggestButton && (
+                          <div className="relative group">
+                            <button
+                              type="button"
+                              onClick={suggestMessages}
+                              disabled={isSuggesting}
+                              className={`flex items-center justify-center w-10 h-10 rounded-full transition-colors duration-200 ${
+                                isSuggesting ? 'cursor-wait text-indigo-500' : 'cursor-pointer text-gray-600 hover:text-indigo-500'
+                              }`}
+                              aria-label="Suggest message"
+                            >
+                              {isSuggesting ? (
+                                <span className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                              ) : (
+                                <Bot size={24} />
+                              )}
+                            </button>
+                            <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-indigo-500 to-teal-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
+                              <div className="font-medium">{isSuggesting ? 'Generating...' : 'Suggest Message'}</div>
+                              {/* Triangle pointing down */}
+                              <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-indigo-500"></div>
+                            </div>
                           </div>
-                        </div>
+                        )}
                         <div className="relative group">
                           <Mic 
                             size={24}
