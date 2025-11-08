@@ -63,6 +63,7 @@ function SignUpPage() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false)
   const [profilePicture, setProfilePicture] = useState(null)
   const [profilePicturePreview, setProfilePicturePreview] = useState(null)
+  const [fieldsDisabled, setFieldsDisabled] = useState(false)
   
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -111,9 +112,29 @@ function SignUpPage() {
   }, [searchParams, router]);
 
   useEffect(() => {
-    setUsernameMessage("")
     const checkUsername = async () => {
       if (username) {
+        // First validate format
+        if (username.length < 3) {
+          form.setError("username", {
+            type: "manual",
+            message: "Username must be of 3 or above characters"
+          })
+          setUsernameMessage("") // Clear availability message
+          return
+        }
+        
+        if (!/^[a-z A-Z_]+$/.test(username)) {
+          form.setError("username", {
+            type: "manual",
+            message: "Username can't have digit and special chars"
+          })
+          setUsernameMessage("") // Clear availability message
+          return
+        }
+        
+        // Format is valid, clear any format errors and check availability
+        form.clearErrors("username")
         setUsernameLoading(true)
         try {
           const response = await axios.post(`/api/unique-username?username=${username}`)
@@ -127,11 +148,15 @@ function SignUpPage() {
         finally {
           setUsernameLoading(false)
         }
+      } else {
+        // Clear errors and messages if username is empty
+        form.clearErrors("username")
+        setUsernameMessage("")
       }
     }
 
     checkUsername()
-  }, [username])
+  }, [username, form])
 
   useEffect(() => {
     const trimmedEmail = email.trim()
@@ -197,6 +222,27 @@ function SignUpPage() {
   }
 
   const onConfirmClick = async () => {
+    // Validate username format before sending OTP
+    const usernameValidation = () => {
+      if (!username || username.length < 3) {
+        form.setError("username", {
+          type: "manual",
+          message: "Username must be of 3 or above characters"
+        })
+        return false
+      }
+      if (!/^[a-z A-Z_]+$/.test(username)) {
+        form.setError("username", {
+          type: "manual",
+          message: "Username can't have digit and special chars"
+        })
+        return false
+      }
+      // Clear any previous errors if validation passes
+      form.clearErrors("username")
+      return true
+    }
+
     // Validate password before sending OTP
     const passwordValidation = () => {
       const hasUpperAndLower = /(?=.*[a-z])(?=.*[A-Z])/.test(password);
@@ -223,6 +269,11 @@ function SignUpPage() {
       return true
     }
 
+    // Validate username format
+    if (!usernameValidation()) {
+      return
+    }
+
     if (!passwordValidation()) {
       return
     }
@@ -237,6 +288,7 @@ function SignUpPage() {
       toast.success("OTP sent successfully")
       setShowOtp(true)
       setStartTimer(true)
+      setFieldsDisabled(true) // Disable fields after successful OTP send
     }
     catch (error) {
       setShowOtp(false)
@@ -381,7 +433,12 @@ function SignUpPage() {
                     <button
                       type="button"
                       onClick={removeProfilePicture}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600 transition-colors"
+                      disabled={fieldsDisabled}
+                      className={`absolute -top-2 -right-2 rounded-full w-6 h-6 flex items-center justify-center transition-colors ${
+                        fieldsDisabled 
+                          ? "bg-gray-400 text-gray-200 cursor-not-allowed" 
+                          : "bg-red-500 text-white hover:bg-red-600"
+                      }`}
                     >
                       ×
                     </button>
@@ -399,10 +456,15 @@ function SignUpPage() {
                     onChange={handleProfilePictureChange}
                     className="hidden"
                     id="profile-picture"
+                    disabled={fieldsDisabled}
                   />
                   <label
                     htmlFor="profile-picture"
-                    className="px-4 py-2 bg-indigo-100 text-indigo-700 rounded-lg cursor-pointer hover:bg-indigo-200 transition-colors font-medium"
+                    className={`px-4 py-2 rounded-lg transition-colors font-medium ${
+                      fieldsDisabled 
+                        ? "bg-gray-200 text-gray-400 cursor-not-allowed" 
+                        : "bg-indigo-100 text-indigo-700 cursor-pointer hover:bg-indigo-200"
+                    }`}
                   >
                     {profilePicture ? 'Change Picture' : 'Choose Picture'}
                   </label>
@@ -427,6 +489,7 @@ function SignUpPage() {
                         type="text"
                         placeholder="Enter username"
                         className="pl-3 pr-10 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                        disabled={fieldsDisabled}
                         {...field}
                         onChange={(e) => {
                           field.onChange(e)
@@ -440,12 +503,13 @@ function SignUpPage() {
                       </div>
                     )}
                   </div>
-                  <FormMessage className="text-red-500 text-sm" />
-                  {usernameMessage && (
+                  {form.formState.errors.username ? (
+                    <FormMessage className="text-red-500 text-sm" />
+                  ) : usernameMessage ? (
                     <p className={`text-sm mt-1 ${usernameMessage?.includes("is available") ? "text-green-500" : "text-red-500"}`}>
                       {usernameMessage}
                     </p>
-                  )}
+                  ) : null}
                 </FormItem>
               )}
             />
@@ -461,6 +525,7 @@ function SignUpPage() {
                       type="email"
                       placeholder="Enter email"
                       className="pl-3 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                      disabled={fieldsDisabled}
                       {...field}
                       onChange={(e) => {
                         field.onChange(e)
@@ -490,6 +555,7 @@ function SignUpPage() {
                         type={showPassword ? "text" : "password"}
                         placeholder="Enter password"
                         className="pl-3 pr-10 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                        disabled={fieldsDisabled}
                         {...field}
                         onChange={(e) => {
                           field.onChange(e)
@@ -518,9 +584,9 @@ function SignUpPage() {
               <Button
                 type="button"
                 onClick={onConfirmClick}
-                disabled={enableConfirm || confirmLoading}
+                disabled={enableConfirm || confirmLoading || fieldsDisabled}
                 className={`w-full py-2 px-4 rounded-lg font-medium text-white ${
-                  enableConfirm
+                  enableConfirm || fieldsDisabled
                     ? "bg-gray-400 cursor-not-allowed"
                     : "bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-md hover:shadow-lg transition-all"
                 }`}
