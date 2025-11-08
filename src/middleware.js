@@ -8,10 +8,18 @@ export async function middleware(req) {
 	// Validate auth via next-auth JWT
 	const token = await getToken({ req, secret: authSecret })
 
-	// If user is authenticated and hits auth pages, send them to UI
+	// If user is authenticated and hits auth pages, send them to chat
 	if (token && (pathname === "/sign-in" || pathname === "/sign-up")) {
 		const redirectUrl = req.nextUrl.clone()
-		redirectUrl.pathname = "/"
+		redirectUrl.pathname = "/chat"
+		redirectUrl.search = ""
+		return NextResponse.redirect(redirectUrl)
+	}
+	
+	// If user is authenticated and hits root, redirect to chat
+	if (token && pathname === "/") {
+		const redirectUrl = req.nextUrl.clone()
+		redirectUrl.pathname = "/chat"
 		redirectUrl.search = ""
 		return NextResponse.redirect(redirectUrl)
 	}

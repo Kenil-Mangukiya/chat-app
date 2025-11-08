@@ -8,6 +8,7 @@ import messageModel from "@/model/message-model"
 import conversationModel from "@/model/conversation-model"
 import groupModel from "@/model/group-model"
 import notificationModel from "@/model/notification-model"
+import { emitToUser } from "@/lib/socket-server"
 
 export async function POST() {
   await connectDb()
@@ -36,7 +37,21 @@ export async function POST() {
       data: { deletedUserId: userId }
     }))
     if (notifications.length) {
+      // Save notifications to database
       await notificationModel.insertMany(notifications, { ordered: false }).catch(() => {})
+      
+      // Immediately emit socket notifications to all friends
+      notifications.forEach(notif => {
+        emitToUser(notif.userId, "notification_received", {
+          id: notif._id || `deleted_account_${userId}_${notif.userId}_${Date.now()}`,
+          type: notif.type,
+          title: notif.title,
+          message: notif.message,
+          timestamp: Date.now(),
+          isRead: false,
+          data: notif.data
+        })
+      })
     }
 
     // Remove user's friendships
@@ -56,6 +71,14 @@ export async function POST() {
       await messageModel.deleteMany({ conversationid: { $in: convIds } })
       await conversationModel.deleteMany({ _id: { $in: convIds } })
     }
+
+    // Delete all notifications for this user (both received and sent)
+    await notificationModel.deleteMany({ 
+      $or: [
+        { userId: userId },
+        { senderId: userId }
+      ]
+    })
 
     // Finally remove the user
     await userModel.deleteOne({ _id: userId })

@@ -2475,11 +2475,17 @@ useEffect(() => {
         return group
       }))
       
+      // Find the group name for the notification (use from socket data first, then from state)
+      const groupName = data.groupName || groups.find(g => {
+        const gid = (g?._id && g._id.toString) ? g._id.toString() : g?._id
+        return gid === data.groupId?.toString()
+      })?.name || 'the group'
+      
       // Show leave notification in group chat
       if (receiverId.current === `group_${data.groupId}`) {
         const leaveMessage = {
           id: `leave_${data.userId}_${Date.now()}`,
-          content: `${data.username} left the group`,
+          content: `${data.username} left the group "${groupName}"`,
           senderId: 'system',
           receiverId: `group_${data.groupId}`,
           timestamp: Date.now(),
@@ -2765,6 +2771,35 @@ useEffect(() => {
       }
     })
     
+    // Listen for account deletion notifications
+    socket.on("notification_received", (data) => {
+      if (data.type === "other" && data.title === "Friend deleted account") {
+        console.log("Friend deleted account notification received:", data)
+        setNotifications(prev => {
+          const list = prev ? [...prev] : []
+          // Check if notification already exists to prevent duplicates
+          const exists = list.some(notif => notif.id === data.id)
+          if (exists) {
+            return list
+          }
+          const newNotification = {
+            id: data.id,
+            type: data.type,
+            title: data.title,
+            message: data.message,
+            timestamp: data.timestamp || Date.now(),
+            isRead: false,
+            data: data.data
+          }
+          const next = [newNotification, ...list].slice(0, 50)
+          saveGlobalNotifications(next)
+          return next
+        })
+        // Refresh friends list to remove deleted friend
+        socket.emit("get_friends", session.user._id)
+      }
+    })
+    
     // Add general socket event logging (excluding friend_request_responded to prevent duplicates)
     socket.onAny((eventName, ...args) => {
       if (eventName !== 'friend_request_responded') {
@@ -2784,6 +2819,7 @@ useEffect(() => {
       socket.off("message_blocked")
       // Call functionality removed
       socket.off("friend_block_notification")
+      socket.off("notification_received")
       socket.offAny()
     }
   }, [sessionData?.user?._id])
@@ -5253,9 +5289,7 @@ useEffect(() => {
                 const res = await fetch('/api/delete-account', { method: 'POST' })
                 const data = await res.json()
                 if (data?.success) {
-                  // Show only message deletion toast; avoid sign-out success toast
-                  toast.success('All messages deleted')
-                  // Sign out after deletion (silent)
+                  // Sign out after deletion (silent, no toast)
                   SignOut()
                 } else {
                   toast.error(data?.message || 'Failed to delete account')

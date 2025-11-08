@@ -32,10 +32,10 @@ function SignInPage() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false)
   const router = useRouter()
   const {data : session,status} = useSession()
-  // If already authenticated, redirect to /
+  // If already authenticated, redirect to /chat
   useEffect(() => {
     if (status === "authenticated") {
-      router.replace("/")
+      router.replace("/chat")
     }
   }, [status, router])
  
@@ -50,7 +50,7 @@ function SignInPage() {
   const handleGoogleSignIn = async () => {
     try {
       setIsGoogleLoading(true)
-      await signIn("google", { callbackUrl: "/" })
+      await signIn("google", { callbackUrl: "/chat" })
     } catch (error) {
       console.error("Google sign-in error:", error)
       toast.error("Google sign-in failed. Please try again.")
@@ -82,8 +82,8 @@ function SignInPage() {
           // Don't show error to user, just log it
         }
         
-        // Redirect to / after successful login
-        router.push("/")
+        // Redirect to /chat after successful login
+        router.push("/chat")
       }
 
 

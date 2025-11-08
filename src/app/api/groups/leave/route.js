@@ -65,7 +65,8 @@ export async function POST(req) {
       emitToUser(uid, "group_member_left", {
         groupId,
         userId: session.user._id,
-        username: memberName
+        username: memberName,
+        groupName: groupName
       })
     })
 
