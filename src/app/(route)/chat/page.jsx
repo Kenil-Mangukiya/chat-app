@@ -2398,6 +2398,13 @@ useEffect(() => {
   useEffect(() => {
     const loadNotifications = async () => {
       try {
+        // Clear sessionStorage notifications when loading for a new user to prevent old notifications from showing
+        try {
+          sessionStorage.removeItem('globalNotifications')
+        } catch (e) {
+          // Ignore errors
+        }
+        
         const res = await fetch('/api/notifications')
         const data = await res.json()
         if (data?.success) {
@@ -2411,19 +2418,18 @@ useEffect(() => {
             isRead: notif.isRead,
             data: notif.data
           }))
-          setNotifications(prev => {
-            // Merge with existing notifications and deduplicate
-            const combined = [...dbNotifications, ...(prev || [])]
-            const seen = new Set()
-            return combined.filter(notif => {
-              if (seen.has(notif.id)) return false
-              seen.add(notif.id)
-              return true
-            }).slice(0, 50)
-          })
+          setNotifications(dbNotifications.slice(0, 50))
+          saveGlobalNotifications(dbNotifications.slice(0, 50))
+        } else {
+          // If no notifications, clear state
+          setNotifications([])
+          saveGlobalNotifications([])
         }
       } catch (e) {
         console.error('Error loading notifications:', e)
+        // Clear notifications on error
+        setNotifications([])
+        saveGlobalNotifications([])
       }
     }
     
@@ -3202,7 +3208,7 @@ useEffect(() => {
                     </div>
                   )}
                   <div className="absolute -top-7 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-green-500 to-teal-600 text-white text-xs rounded-lg px-3 py-1 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-lg whitespace-nowrap">
-                    <div className="font-medium">New Chats ({totalNewMessages})</div>
+                    <div className="font-medium">{totalNewMessages > 0 ? `New Chats (${totalNewMessages})` : 'New Chats'}</div>
                     <div className="absolute top-full left-1/2 transform -translate-x-1/2 border-4 border-transparent border-t-green-500"></div>
                   </div>
                 </div>
