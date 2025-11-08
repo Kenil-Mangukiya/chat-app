@@ -5750,11 +5750,12 @@ useEffect(() => {
                 {filteredUsers.map((user, index) => (
                   <div
                     key={user._id}
-                    className={`flex items-center justify-between p-4 bg-white rounded-xl hover:bg-gray-50 transition-all duration-200 border border-gray-200 shadow-sm hover:shadow-md ${
+                    className={`flex flex-col md:flex-row md:items-center md:justify-between p-4 bg-white rounded-xl hover:bg-gray-50 transition-all duration-200 border border-gray-200 shadow-sm hover:shadow-md gap-3 ${
                       index === filteredUsers.length - 1 ? 'mb-2' : ''
                     }`}
                   >
-                    <div className="flex items-center space-x-4">
+                    {/* First Row: Avatar, Name, Email */}
+                    <div className="flex items-center space-x-4 flex-1">
                       {/* Avatar */}
                       <Avatar 
                         key={`user-${user._id}`}
@@ -5766,16 +5767,16 @@ useEffect(() => {
                       />
                       
                       {/* User Info */}
-                      <div>
-                        <h3 className="font-semibold text-gray-900">{user.username}</h3>
-                        <p className="text-sm text-gray-500">{user.email}</p>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-gray-900 truncate">{user.username}</h3>
+                        <p className="text-sm text-gray-500 truncate">{user.email}</p>
                       </div>
                     </div>
 
-                    {/* Action Button */}
-                    <div className="flex items-center">
+                    {/* Second Row (Mobile) / Same Row (Desktop): Action Button */}
+                    <div className="flex items-center md:flex-shrink-0">
                       {user.status === 'friend' && (
-                        <div className="flex items-center text-green-600 bg-green-50 px-4 py-2 rounded-full">
+                        <div className="w-full md:w-auto flex items-center justify-center text-green-600 bg-green-50 px-4 py-2 md:px-4 md:py-3 rounded-lg md:rounded-full h-[40px] md:h-auto">
                           <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                           </svg>
@@ -5784,7 +5785,7 @@ useEffect(() => {
                       )}
                       
                       {user.status === 'sent' && (
-                        <div className="flex items-center text-blue-600 bg-blue-50 px-4 py-2 rounded-full">
+                        <div className="w-full md:w-auto flex items-center justify-center text-blue-600 bg-blue-50 px-4 py-2 md:px-4 md:py-3 rounded-lg md:rounded-full h-[40px] md:h-auto">
                           <svg className="w-4 h-4 mr-2 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
@@ -5793,7 +5794,7 @@ useEffect(() => {
                       )}
                       
                       {user.status === 'received' && (
-                        <div className="flex items-center text-orange-600 bg-orange-50 px-4 py-2 rounded-full">
+                        <div className="w-full md:w-auto flex items-center justify-center text-orange-600 bg-orange-50 px-4 py-2 md:px-4 md:py-3 rounded-lg md:rounded-full h-[40px] md:h-auto">
                           <svg className="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
                             <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                           </svg>
@@ -5805,22 +5806,22 @@ useEffect(() => {
                         <button
                           onClick={() => handleSendFriendRequest(user._id, user.username)}
                           disabled={friendRequestLoading[user._id]}
-                          className="bg-gradient-to-r from-blue-500 to-purple-600 text-white px-6 py-2 rounded-full hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg hover:shadow-xl min-h-[44px] min-w-[44px] text-sm sm:text-base"
+                          className="w-full md:w-auto bg-gradient-to-r from-blue-500 to-purple-600 text-white px-4 py-2 md:px-6 md:py-3 rounded-xl md:rounded-full hover:from-blue-600 hover:to-purple-700 transition-all duration-200 transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none shadow-lg hover:shadow-xl h-[40px] md:min-h-[44px] text-sm sm:text-base font-medium flex items-center justify-center gap-2"
                         >
                           {friendRequestLoading[user._id] ? (
-                            <div className="flex items-center">
-                              <svg className="w-4 h-4 mr-2 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <>
+                              <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                               </svg>
-                              Sending...
-                            </div>
+                              <span>Sending...</span>
+                            </>
                           ) : (
-                            <div className="flex items-center">
-                              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <>
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                               </svg>
-                              Add Friend
-                            </div>
+                              <span>Add Friend</span>
+                            </>
                           )}
                         </button>
                       )}
