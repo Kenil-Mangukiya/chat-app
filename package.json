@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "nodemon src/app/api/server.js",
     "build": "next build",
-    "start": "set NODE_ENV=production && node src/app/api/server.js",
+    "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
