@@ -11,8 +11,9 @@ import socket from "../../lib/socket.js";
 import { setSocketInstance, processNotificationQueue } from "../../lib/socket-server.js";
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = "localhost";
-const port = parseInt(process.env.PORT) || 3000;
+const hostname = process.env.HOSTNAME || "localhost";
+const port = parseInt(process.env.PORT);
+const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || `http://localhost:${port}`;
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
@@ -27,7 +28,7 @@ app.prepare().then(async () => {
 
   const io = new Server(server, {
     cors: {
-      origin: "http://localhost:3000",
+      origin: frontendUrl,
       methods: ["GET", "POST"],
     },
   });
