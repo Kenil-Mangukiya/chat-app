@@ -9,7 +9,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { MessageCircle, Search, MoreVertical, Paperclip, Smile, Mic, Send, ChevronLeft, User, LogOut, UserPlus, Users, Copy, Delete, Users2, ArrowUpDown, ArrowUp, ArrowDown, Bot, UserMinus, Trash, Bell, Phone, Video } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import { FormProvider, useForm } from 'react-hook-form';
 import Picker from '@emoji-mart/react';
 import data from '@emoji-mart/data';
@@ -23,7 +23,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { ChatlyLoader } from "@/components/ui/chatly-loader";
 
 
-export default function ChatlyUI() {
+function ChatlyUIInner() {
   // Add CSS for search highlight animation
   useEffect(() => {
     const style = document.createElement('style');
@@ -6036,4 +6036,12 @@ useEffect(() => {
     )}
   </>
 );
+}
+
+export default function ChatlyUI() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <ChatlyUIInner />
+    </Suspense>
+  );
 }
