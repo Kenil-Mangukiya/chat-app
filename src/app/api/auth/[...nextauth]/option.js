@@ -241,5 +241,8 @@ export const authOption = {
   
   debug: config.nodeEnv !== "production", // Only debug in development
   secret: config.nextAuthSecret,
+  
+  // Ensure we use the correct base URL
+  trustHost: true, // Trust the host header (important for production)
 };
 

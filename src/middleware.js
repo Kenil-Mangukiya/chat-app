@@ -5,8 +5,14 @@ export async function middleware(req) {
 	const { pathname } = req.nextUrl
 	const authSecret = process.env.NEXT_AUTH_SECRET
 
+	console.log("🔵 [MIDDLEWARE DEBUG] Pathname:", pathname)
+	console.log("🔵 [MIDDLEWARE DEBUG] Full URL:", req.nextUrl.toString())
+	console.log("🔵 [MIDDLEWARE DEBUG] Origin:", req.nextUrl.origin)
+
 	// Validate auth via next-auth JWT
 	const token = await getToken({ req, secret: authSecret })
+	
+	console.log("🔵 [MIDDLEWARE DEBUG] Token exists:", !!token)
 
 	// If user is authenticated and hits auth pages, send them to chat
 	if (token && (pathname === "/sign-in" || pathname === "/sign-up")) {
@@ -38,9 +44,18 @@ export async function middleware(req) {
 
 	// Not authenticated on protected path: redirect to sign-in without query params
 	if (!token) {
-		const url = req.nextUrl.clone()
-		url.pathname = "/sign-in"
-		url.search = ""
+		// Use environment variable for base URL, or fallback to current origin
+		const baseUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || process.env.NEXTAUTH_URL
+		const url = baseUrl 
+			? new URL("/sign-in", baseUrl)
+			: req.nextUrl.clone()
+		
+		if (!baseUrl) {
+			url.pathname = "/sign-in"
+			url.search = ""
+		}
+		
+		console.log("🔵 [MIDDLEWARE DEBUG] Redirecting unauthenticated user to:", url.toString())
 		return NextResponse.redirect(url)
 	}
 

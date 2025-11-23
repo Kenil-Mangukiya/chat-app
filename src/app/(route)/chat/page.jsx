@@ -2098,8 +2098,48 @@ function ChatlyUIInner() {
   // Voice call functionality removed
 
 const SignOut = () => {
-  console.log("signout called")
-  signOut({callbackUrl:"https://chatly.aiyug.us/sign-in"})
+  console.log("🔴 [SIGNOUT DEBUG] ========== SIGN OUT STARTED ==========")
+  
+  // Determine the correct sign-in URL
+  const productionUrl = "https://chatly.aiyug.us"
+  const envUrl = process.env.NEXT_PUBLIC_FRONTEND_URL
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : ''
+  const nodeEnv = process.env.NODE_ENV
+  
+  console.log("🔴 [SIGNOUT DEBUG] NODE_ENV:", nodeEnv)
+  console.log("🔴 [SIGNOUT DEBUG] NEXT_PUBLIC_FRONTEND_URL:", envUrl)
+  console.log("🔴 [SIGNOUT DEBUG] window.location.origin:", currentOrigin)
+  console.log("🔴 [SIGNOUT DEBUG] window.location.href:", typeof window !== 'undefined' ? window.location.href : 'N/A')
+  console.log("🔴 [SIGNOUT DEBUG] Production URL:", productionUrl)
+  
+  // Always use production URL for sign-in redirect
+  const signInUrl = `${productionUrl}/sign-in`
+  
+  console.log("🔴 [SIGNOUT DEBUG] Final signInUrl (FORCED PRODUCTION):", signInUrl)
+  console.log("🔴 [SIGNOUT DEBUG] Calling signOut with redirect: false")
+  
+  // Sign out without redirect, then manually redirect
+  signOut({
+    redirect: false,
+    callbackUrl: signInUrl
+  }).then(() => {
+    console.log("🔴 [SIGNOUT DEBUG] signOut promise resolved, now manually redirecting...")
+    console.log("🔴 [SIGNOUT DEBUG] Redirecting to:", signInUrl)
+    
+    // Force redirect to production URL
+    if (typeof window !== 'undefined') {
+      window.location.href = signInUrl
+    }
+  }).catch((error) => {
+    console.error("🔴 [SIGNOUT DEBUG] signOut error:", error)
+    // Fallback: redirect anyway
+    if (typeof window !== 'undefined') {
+      console.log("🔴 [SIGNOUT DEBUG] Fallback redirect to:", signInUrl)
+      window.location.href = signInUrl
+    }
+  })
+  
+  console.log("🔴 [SIGNOUT DEBUG] ========== SIGN OUT FUNCTION END ==========")
 }
 
 
