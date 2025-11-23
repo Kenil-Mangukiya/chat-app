@@ -2099,7 +2099,7 @@ function ChatlyUIInner() {
 
 const SignOut = () => {
   console.log("signout called")
-  signOut({callbackUrl:"http://localhost:3001/sign-in"})
+  signOut({callbackUrl:"https://chatly.aiyug.us/sign-in"})
 }
 
 

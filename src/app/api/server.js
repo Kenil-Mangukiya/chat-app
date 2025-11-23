@@ -13,7 +13,7 @@ import { setSocketInstance, processNotificationQueue } from "../../lib/socket-se
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME || "localhost";
 const port = parseInt(process.env.PORT) || 3008;
-const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || `http://localhost:${port}`;
+const frontendUrl = process.env.NEXT_PUBLIC_FRONTEND_URL || `https://chatly.aiyug.us:${port}`;
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
