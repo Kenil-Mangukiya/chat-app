@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, Suspense } from "react";
-import { useDebounceCallback } from "usehooks-ts";
 import axios, { AxiosError } from "axios";
 import { FormProvider, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -29,6 +28,23 @@ import { toast } from "react-toastify";
 import Link from "next/link";
 import { UserIcon } from "lucide-react";
 
+/* ----------------------------- CUSTOM DEBOUNCE HOOK ----------------------------- */
+function useDebounce(value, delay) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 /* ----------------------------- MAIN INNER LOGIC ----------------------------- */
 function SignUpInner() {
   const [username, setUsername] = useState("");
@@ -38,7 +54,6 @@ function SignUpInner() {
   const [usernameMessage, setUsernameMessage] = useState("");
   const [usernameLoading, setUsernameLoading] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
-  const debouncedUsername = useDebounceCallback(setUsername, 300);
   const [oneChecked, setOneChecked] = useState(false);
   const [twoChecked, setTwoChecked] = useState(false);
   const [threeChecked, setThreeChecked] = useState(false);
@@ -54,8 +69,11 @@ function SignUpInner() {
   const [otpError, setOtpError] = useState("");
   const otpRef = useRef("");
   const fileInputRef = useRef(null);
-  const debouncedEmail = useDebounceCallback(setEmail, 300);
   const [emailMessage, setEmailMessage] = useState("");
+  
+  // Debounce values for API calls (not state updates)
+  const debouncedUsername = useDebounce(username, 500);
+  const debouncedEmail = useDebounce(email, 500);
   const [lengthChecked, setLengthChecked] = useState(false);
   const [googleAuthMessage, setGoogleAuthMessage] = useState("");
   const [googleAuthError, setGoogleAuthError] = useState("");
@@ -119,70 +137,93 @@ function SignUpInner() {
   /* ----------------------------- Username Check ----------------------------- */
   useEffect(() => {
     const checkUsername = async () => {
-      if (username) {
-        if (username.length < 3) {
+      // Only check if debounced username has value and matches current username
+      if (!debouncedUsername || debouncedUsername !== username) {
+        return;
+      }
+
+      if (debouncedUsername.length < 3) {
           form.setError("username", {
             type: "manual",
             message: "Username must be of 3 or above characters",
           });
           setUsernameMessage("");
+        setUsernameLoading(false);
           return;
         }
 
-        if (!/^[a-z A-Z_]+$/.test(username)) {
+      if (!/^[a-z A-Z_]+$/.test(debouncedUsername)) {
           form.setError("username", {
             type: "manual",
             message: "Username can't have digits or special chars",
           });
           setUsernameMessage("");
+        setUsernameLoading(false);
           return;
         }
 
         form.clearErrors("username");
         setUsernameLoading(true);
+      
         try {
           const response = await axios.post(
-            `/api/unique-username?username=${username}`
+          `/api/unique-username?username=${debouncedUsername}`
           );
           setUsernameMessage(response.data.message);
         } catch (error) {
           if (error instanceof AxiosError) {
-            setUsernameMessage(error.response.data.message);
+          setUsernameMessage(error.response?.data?.message || "Error checking username");
           }
         } finally {
           setUsernameLoading(false);
         }
+    };
+
+    if (debouncedUsername) {
+      checkUsername();
       } else {
         form.clearErrors("username");
         setUsernameMessage("");
+      setUsernameLoading(false);
       }
-    };
-
-    checkUsername();
-  }, [username, form]);
+  }, [debouncedUsername, username, form]);
 
   /* ------------------------------- Email Check ------------------------------ */
   useEffect(() => {
-    const trimmedEmail = email.trim();
-    if (trimmedEmail.length == 0) {
+    const checkEmail = async () => {
+      // Only check if debounced email has value and matches current email
+      if (!debouncedEmail || debouncedEmail !== email || debouncedEmail.trim().length === 0) {
+        setEmailMessage("");
+        return;
+      }
+
+      const trimmedEmail = debouncedEmail.trim();
+      if (trimmedEmail.length === 0) {
+        setEmailMessage("");
+        return;
+      }
+
+      // Basic email validation before API call
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(trimmedEmail)) {
       setEmailMessage("");
       return;
     }
-    const checkEmail = async () => {
-      if (email) {
+
+      setEmailMessage("");
+      
         try {
-          setEmailMessage("");
-          const response = await axios.post("/api/check-email", { email });
-          setEmailMessage(response?.data?.message);
+        const response = await axios.post("/api/check-email", { email: trimmedEmail });
+        setEmailMessage(response?.data?.message || "");
         } catch (error) {
           if (error instanceof AxiosError) {
-            setEmailMessage(error.response.data.message);
-          }
+          setEmailMessage(error.response?.data?.message || "Error checking email");
         }
       }
     };
+
     checkEmail();
-  }, [email]);
+  }, [debouncedEmail, email]);
 
   /* --------------------------- Password Validation -------------------------- */
   useEffect(() => {
@@ -209,7 +250,9 @@ function SignUpInner() {
       usernameMessage.includes("Username is available") &&
       email.includes("@") &&
       email.includes(".") &&
-      emailMessage.includes("can register")
+      emailMessage.includes("can register") &&
+      !emailMessage.includes("already registered") &&
+      !emailMessage.includes("Invalid email")
     ) {
       setEnableConfirm(false);
     }
@@ -284,7 +327,13 @@ function SignUpInner() {
       });
       toast.success("OTP sent successfully");
       setShowOtp(true);
-      setStartTimer(true);
+      setOtpExpired(false);
+      setTimeLeft(60);
+      setStartTimer(false);
+      // Start timer after a brief delay to ensure state is updated
+      setTimeout(() => {
+        setStartTimer(true);
+      }, 100);
       setFieldsDisabled(true);
     } catch (error) {
       setShowOtp(false);
@@ -296,23 +345,59 @@ function SignUpInner() {
     }
   };
 
+  /* ------------------------------- Resend OTP Function ------------------------------ */
+  const handleResendOtp = async () => {
+    try {
+      const code = generateOtp();
+      setConfirmLoading(true);
+      await axios.post("/api/send-otp", {
+        username,
+        email,
+        otp: otpRef.current,
+      });
+      toast.success("OTP resent successfully");
+      // Reset timer and state
+      setOtpExpired(false);
+      setTimeLeft(60);
+      setStartTimer(false);
+      // Clear OTP input
+      setOtp("");
+      setDisableSignUp(true);
+      // Restart timer after a brief delay
+      setTimeout(() => {
+        setStartTimer(true);
+      }, 100);
+    } catch (error) {
+      if (error instanceof AxiosError) {
+        toast.error(error.response?.data?.message || "Failed to resend OTP");
+      }
+    } finally {
+      setConfirmLoading(false);
+    }
+  };
+
   /* ------------------------------- Timer Logic ------------------------------ */
   useEffect(() => {
-    if (startTimer) {
-      const timer = setInterval(() => {
+    let timer = null;
+    if (startTimer && !otpExpired) {
+      timer = setInterval(() => {
         setTimeLeft((prev) => {
-          if (prev <= 1) {
-            clearInterval(timer);
+          const newTime = prev - 1;
+          if (newTime <= 0) {
             setOtpExpired(true);
             otpRef.current = "";
             return 0;
           }
-          return prev - 1;
+          return newTime;
         });
       }, 1000);
-      return () => clearInterval(timer);
     }
-  }, [startTimer]);
+    return () => {
+      if (timer) {
+        clearInterval(timer);
+      }
+    };
+  }, [startTimer, otpExpired]);
 
   useEffect(() => {
     if (otp.length == 6) {
@@ -367,19 +452,16 @@ function SignUpInner() {
   };
 
   /* ------------------------------- UI Section ------------------------------- */
-    /* ------------------------------- UI Section ------------------------------- */
-    return (
+  /* ------------------------------- UI Section ------------------------------- */
+  return (
       <FormProvider {...form}>
-        <div className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-50 to-blue-100 flex flex-col items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-50 to-blue-100 flex flex-col items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
           <div className="bg-white rounded-2xl shadow-xl overflow-hidden w-full max-w-md">
             <div className="p-6 sm:p-8">
               {/* Header */}
               <div className="flex flex-col items-center justify-center mb-8">
-                <div className="bg-indigo-600 rounded-full p-3 mb-4">
-                  <UserIcon className="w-8 h-8 text-white" />
-                </div>
-                <h1 className="text-2xl font-bold text-gray-800">Create Account</h1>
-                <p className="text-gray-500 mt-1">Sign up to get started</p>
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent mb-2">Create Account</h1>
+                <p className="text-gray-600 mt-1 font-medium">Sign up to Chatly</p>
               </div>
   
               {/* Google Auth Messages */}
@@ -402,11 +484,11 @@ function SignUpInner() {
                       <img
                         src={profilePicturePreview}
                         alt="Profile preview"
-                        className="w-24 h-24 rounded-full object-cover border-4 border-indigo-200"
+                        className="w-32 h-32 rounded-full object-cover border-4 border-indigo-200 shadow-lg"
                       />
                     ) : (
-                      <div className="w-24 h-24 rounded-full bg-indigo-100 flex items-center justify-center border-4 border-indigo-200">
-                        <UserIcon className="w-12 h-12 text-indigo-400" />
+                      <div className="w-32 h-32 rounded-full bg-indigo-100 flex items-center justify-center border-4 border-indigo-200 shadow-lg">
+                        <UserIcon className="w-16 h-16 text-indigo-400" />
                       </div>
                     )}
                     <input
@@ -426,16 +508,52 @@ function SignUpInner() {
                       }}
                       className="hidden"
                     />
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={fieldsDisabled}
-                      className="absolute bottom-0 right-0 bg-indigo-600 text-white rounded-full p-2 hover:bg-indigo-700 transition-colors"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                      </svg>
-                    </button>
+                    {profilePicturePreview ? (
+                      <>
+                        {/* Update Button */}
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={fieldsDisabled}
+                          className="absolute bottom-0 right-0 bg-indigo-600 text-white rounded-full p-2 hover:bg-indigo-700 transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-110 z-10"
+                          title="Update image"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                        </button>
+                        {/* Remove Button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProfilePicture(null);
+                            setProfilePicturePreview(null);
+                            if (fileInputRef.current) {
+                              fileInputRef.current.value = "";
+                            }
+                          }}
+                          disabled={fieldsDisabled}
+                          className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1.5 hover:bg-red-600 transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-110 z-10"
+                          title="Remove image"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={fieldsDisabled}
+                        className="absolute bottom-0 right-0 bg-indigo-600 text-white rounded-full p-2 hover:bg-indigo-700 transition-colors shadow-lg"
+                        title="Upload image"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
                   <p className="text-xs text-gray-500 mt-2">Click to upload profile picture (optional)</p>
                 </div>
@@ -443,25 +561,49 @@ function SignUpInner() {
   
               {!showOtp ? (
                 /* ----------------------------- Sign Up Form ----------------------------- */
-                <div className="space-y-4">
+                <div className="space-y-5">
                   {/* Username Field */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Username</label>
                     <div className="relative">
                       <Input
                         type="text"
-                        placeholder="Enter username"
+                        placeholder="Enter username (letters only)"
                         value={username}
-                        onChange={(e) => debouncedUsername(e.target.value)}
+                        onChange={(e) => {
+                          // Only allow letters, spaces, and underscores
+                          const value = e.target.value;
+                          const filteredValue = value.replace(/[^a-zA-Z _]/g, '');
+                          setUsername(filteredValue);
+                        }}
+                        onKeyDown={(e) => {
+                          // Prevent numbers and special characters from being typed
+                          const key = e.key;
+                          // Allow: letters, space, underscore, backspace, delete, arrow keys, tab
+                          if (!/^[a-zA-Z _]$/.test(key) && 
+                              !['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab', 'Home', 'End'].includes(key) &&
+                              !(e.ctrlKey || e.metaKey)) {
+                            e.preventDefault();
+                          }
+                        }}
+                        onPaste={(e) => {
+                          // Filter pasted content to only allow letters, spaces, and underscores
+                          e.preventDefault();
+                          const pastedText = e.clipboardData.getData('text');
+                          const filteredText = pastedText.replace(/[^a-zA-Z _]/g, '');
+                          setUsername(filteredText);
+                        }}
                         disabled={fieldsDisabled}
-                        className="w-full pl-3 pr-3 py-2 border-gray-300 focus:border-indigo-500 focus:ring focus:ring-indigo-200 rounded-lg"
+                        className="w-full pl-3 pr-3 py-2.5 border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 rounded-lg transition-all"
                       />
+                      {usernameLoading && (
+                        <div className="absolute right-3 top-2.5">
+                          <div className="h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                        </div>
+                      )}
                     </div>
-                    {usernameLoading && (
-                      <p className="text-xs text-gray-500 mt-1">Checking availability...</p>
-                    )}
                     {usernameMessage && (
-                      <p className={`text-xs mt-1 ${usernameMessage.includes("available") ? "text-green-600" : "text-red-600"}`}>
+                      <p className={`text-xs mt-1.5 font-medium ${usernameMessage.includes("Username is available") ? "text-green-600" : "text-red-600"}`}>
                         {usernameMessage}
                       </p>
                     )}
@@ -469,19 +611,25 @@ function SignUpInner() {
   
                   {/* Email Field */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
                     <div className="relative">
                       <Input
                         type="email"
                         placeholder="Enter your email"
                         value={email}
-                        onChange={(e) => debouncedEmail(e.target.value)}
+                        onChange={(e) => setEmail(e.target.value)}
                         disabled={fieldsDisabled}
-                        className="w-full pl-3 pr-3 py-2 border-gray-300 focus:border-indigo-500 focus:ring focus:ring-indigo-200 rounded-lg"
+                        className="w-full pl-3 pr-3 py-2.5 border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 rounded-lg transition-all"
                       />
                     </div>
                     {emailMessage && (
-                      <p className={`text-xs mt-1 ${emailMessage.includes("can register") ? "text-green-600" : "text-red-600"}`}>
+                      <p className={`text-xs mt-1.5 font-medium ${
+                        emailMessage.includes("can register") && 
+                        !emailMessage.includes("already registered") && 
+                        !emailMessage.includes("Invalid email")
+                          ? "text-green-600" 
+                          : "text-red-600"
+                      }`}>
                         {emailMessage}
                       </p>
                     )}
@@ -489,7 +637,7 @@ function SignUpInner() {
   
                   {/* Password Field */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
                     <div className="relative">
                       <Input
                         type={showPassword ? "text" : "password"}
@@ -497,7 +645,7 @@ function SignUpInner() {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         disabled={fieldsDisabled}
-                        className="w-full pl-3 pr-10 py-2 border-gray-300 focus:border-indigo-500 focus:ring focus:ring-indigo-200 rounded-lg"
+                        className="w-full pl-3 pr-10 py-2.5 border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 rounded-lg transition-all"
                       />
                       <button
                         type="button"
@@ -509,24 +657,26 @@ function SignUpInner() {
                     </div>
                     
                     {/* Password Validation */}
-                    <div className="mt-2 space-y-1">
-                      <div className={`flex items-center text-xs ${lengthChecked ? "text-green-600" : "text-gray-500"}`}>
-                        <span className={lengthChecked ? "✓" : "○"}>{lengthChecked ? "✓" : "○"}</span>
-                        <span className="ml-2">At least 6 characters</span>
+                    {password && (
+                      <div className="mt-3 space-y-1.5 bg-gray-50 p-3 rounded-lg">
+                        <div className={`flex items-center text-xs ${lengthChecked ? "text-green-600" : "text-gray-500"}`}>
+                          <span className="mr-2 font-bold">{lengthChecked ? "✓" : "○"}</span>
+                          <span>At least 6 characters</span>
+                        </div>
+                        <div className={`flex items-center text-xs ${oneChecked ? "text-green-600" : "text-gray-500"}`}>
+                          <span className="mr-2 font-bold">{oneChecked ? "✓" : "○"}</span>
+                          <span>Uppercase and lowercase letters</span>
+                        </div>
+                        <div className={`flex items-center text-xs ${twoChecked ? "text-green-600" : "text-gray-500"}`}>
+                          <span className="mr-2 font-bold">{twoChecked ? "✓" : "○"}</span>
+                          <span>At least one number</span>
+                        </div>
+                        <div className={`flex items-center text-xs ${threeChecked ? "text-green-600" : "text-gray-500"}`}>
+                          <span className="mr-2 font-bold">{threeChecked ? "✓" : "○"}</span>
+                          <span>At least one special character</span>
+                        </div>
                       </div>
-                      <div className={`flex items-center text-xs ${oneChecked ? "text-green-600" : "text-gray-500"}`}>
-                        <span>{oneChecked ? "✓" : "○"}</span>
-                        <span className="ml-2">Uppercase and lowercase letters</span>
-                      </div>
-                      <div className={`flex items-center text-xs ${twoChecked ? "text-green-600" : "text-gray-500"}`}>
-                        <span>{twoChecked ? "✓" : "○"}</span>
-                        <span className="ml-2">At least one number</span>
-                      </div>
-                      <div className={`flex items-center text-xs ${threeChecked ? "text-green-600" : "text-gray-500"}`}>
-                        <span>{threeChecked ? "✓" : "○"}</span>
-                        <span className="ml-2">At least one special character</span>
-                      </div>
-                    </div>
+                    )}
                   </div>
   
                   {/* Confirm Button */}
@@ -534,18 +684,25 @@ function SignUpInner() {
                     type="button"
                     onClick={onConfirmClick}
                     disabled={enableConfirm || confirmLoading || fieldsDisabled}
-                    className="w-full mt-6 bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg transition-colors"
+                    className="w-full mt-6 bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-lg transition-all shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed font-medium"
                   >
-                    {confirmLoading ? "Sending OTP..." : "Confirm & Send OTP"}
+                    {confirmLoading ? (
+                      <span className="flex items-center justify-center">
+                        <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
+                        Sending OTP...
+                      </span>
+                    ) : (
+                      "Confirm & Send OTP"
+                    )}
                   </Button>
   
                   {/* Divider */}
-                  <div className="relative my-4">
+                  <div className="relative my-6">
                     <div className="absolute inset-0 flex items-center">
                       <div className="w-full border-t border-gray-300"></div>
                     </div>
                     <div className="relative flex justify-center text-xs uppercase">
-                      <span className="bg-white px-2 text-gray-500">Or continue with</span>
+                      <span className="bg-white px-3 text-gray-500">Or continue with</span>
                     </div>
                   </div>
   
@@ -554,19 +711,19 @@ function SignUpInner() {
                     type="button"
                     onClick={handleGoogleSignUp}
                     disabled={isGoogleLoading || fieldsDisabled}
-                    className="w-full bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 py-2 rounded-lg flex items-center justify-center"
+                    className="w-full bg-white text-gray-700 border-2 border-gray-300 hover:bg-gray-50 hover:border-gray-400 py-2.5 rounded-lg flex items-center justify-center shadow-sm transition-all font-medium"
                   >
                     {isGoogleLoading ? (
                       <div className="h-5 w-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mr-2"></div>
                     ) : (
-                      <FaGoogle className="text-red-500 mr-2" />
+                      <FaGoogle className="text-red-500 mr-2 text-lg" />
                     )}
                     Sign up with Google
                   </Button>
   
-                  <p className="text-center text-sm text-gray-600 mt-4">
+                  <p className="text-center text-sm text-gray-600 mt-5">
                     Already have an account?{" "}
-                    <Link href="/sign-in" className="font-medium text-indigo-600 hover:text-indigo-500">
+                    <Link href="/sign-in" className="font-medium text-indigo-600 hover:text-indigo-500 transition-colors">
                       Sign in
                     </Link>
                   </p>
@@ -618,26 +775,31 @@ function SignUpInner() {
                     )}
                   />
   
-                  {!otpExpired && (
+                  <div className="flex flex-col items-center gap-2">
+                    {!otpExpired ? (
+                      <p className="text-center text-sm">
+                        Code expires in: <strong className="text-red-600 font-bold text-base">{timeLeft}s</strong>
+                      </p>
+                    ) : (
+                      <p className="text-sm text-red-600 font-medium">OTP expired</p>
+                    )}
+                    
                     <p className="text-center text-sm text-gray-600">
-                      Code expires in: <strong>{timeLeft}s</strong>
+                      Don't get code?{" "}
+                      {confirmLoading ? (
+                        <span className="text-indigo-500">Resending...</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleResendOtp}
+                          disabled={confirmLoading}
+                          className="text-indigo-600 hover:text-indigo-700 font-medium underline hover:no-underline transition-all"
+                        >
+                          Resend code
+                        </button>
+                      )}
                     </p>
-                  )}
-  
-                  {otpExpired && (
-                    <div className="text-center">
-                      <p className="text-sm text-red-600 mb-2">OTP expired</p>
-                      <Button
-                        type="button"
-                        onClick={onConfirmClick}
-                        disabled={confirmLoading}
-                        variant="outline"
-                        className="w-full"
-                      >
-                        Resend OTP
-                      </Button>
-                    </div>
-                  )}
+                  </div>
   
                   <Button
                     type="button"
@@ -666,9 +828,9 @@ function SignUpInner() {
               )}
             </div>
           </div>
-        </div>
+    </div>
       </FormProvider>
-    );
+  );
 }
 
 /* ------------------------- WRAP WITH SUSPENSE HERE ------------------------- */
