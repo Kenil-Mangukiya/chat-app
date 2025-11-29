@@ -68,8 +68,15 @@ function SignInPage() {
         password: data.password
       })
       
-      if (response?.error) {  
-        toast.error("Invalid credentials")
+      if (response?.error) {
+        // Check if it's a Google account error
+        if (response.error === "GOOGLE_ACCOUNT" || response.error.includes("GOOGLE_ACCOUNT")) {
+          toast.error("This account was created with Google. Please sign in with Google instead.", {
+            duration: 5000,
+          })
+        } else {
+          toast.error("Invalid credentials")
+        }
       } else {
         toast.success("Successfully signed in!")
         
@@ -86,10 +93,15 @@ function SignInPage() {
         router.push("/chat")
       }
 
-
-
     } catch (error) {
-      toast.error("Invalid credentials")
+      // Check if error message contains GOOGLE_ACCOUNT
+      if (error?.message?.includes("GOOGLE_ACCOUNT")) {
+        toast.error("This account was created with Google. Please sign in with Google instead.", {
+          duration: 5000,
+        })
+      } else {
+        toast.error("Invalid credentials")
+      }
       console.log("Error is : ",error)
     } finally {
       setLoading(false)

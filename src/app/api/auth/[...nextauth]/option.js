@@ -61,6 +61,11 @@ export const authOption = {
             throw new Error("Invalid credentials");
           }
           
+          // Check if user registered with Google
+          if (userData.googleid) {
+            throw new Error("GOOGLE_ACCOUNT");
+          }
+          
           const checkPassword = await bcrypt.compare(credentials.password, userData.password);
           if (checkPassword) {
             // Return a plain object with only necessary fields
