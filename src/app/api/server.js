@@ -218,7 +218,9 @@ app.prepare().then(async () => {
 
     socket.on("get_friends", async (userId) => {
       try {
-        const friendData = await friendModel.find({ userid: userId }).sort({ friendusername: 1 });
+        // Convert userId to ObjectId to ensure proper database query
+        const userObjectId = new mongoose.Types.ObjectId(userId);
+        const friendData = await friendModel.find({ userid: userObjectId }).sort({ friendusername: 1 });
         console.log("friendData is : ",friendData)
         socket.emit("friend_list", friendData);
       } catch (error) {

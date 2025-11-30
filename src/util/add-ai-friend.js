@@ -33,7 +33,7 @@ export async function addAiFriendToUser(userId) {
 
         // Create AI friend relationship
         const createAiFriend = await friendModel.create({
-            userid: userId,
+            userid: new mongoose.Types.ObjectId(userId),
             friendid: aiUser._id,
             friendusername: aiUser.username,
             friendemail: aiUser.email,
