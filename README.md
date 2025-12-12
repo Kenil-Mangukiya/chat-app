@@ -2,7 +2,7 @@
 
 *Enterprise-grade real-time messaging platform with AI integration and seamless collaboration tools.*
 
-<!-- ![Chatly Demo](demo.gif) -->
+<img width="1079" height="797" alt="Image" src="https://github.com/user-attachments/assets/113d5496-55a0-44ee-b7bf-63381c0bfa50" />
 
 ## 🚀 Project Overview
 
